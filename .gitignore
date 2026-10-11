@@ -1,0 +1,9 @@
+# Python
+__pycache__/
+*.pyc
+env/
+
+# Data lokal (jangan push)
+laporan_owner_*.txt
+*.sql
+error.log

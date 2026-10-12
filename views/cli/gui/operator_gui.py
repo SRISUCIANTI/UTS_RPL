@@ -3,6 +3,7 @@ import sys
 import customtkinter as ctk
 from tkinter import ttk, messagebox
 import mysql.connector
+import subprocess
 
 # Ambil direktori tempat operator_gui.py berada
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -121,6 +122,16 @@ class OperatorGUI(ctk.CTk):
             height=40,
             command=self.muat_data_pending,
         ).pack(fill="x", padx=15, pady=10)
+
+        ctk.CTkButton(
+            f_kiri,
+            text="Lihat Bukti Bayar",
+            fg_color="#9b59b6",
+            hover_color="#8e44ad",
+            height=40,
+            command=self.lihat_bukti_bayar,
+        ).pack(fill="x", padx=15, pady=10)
+
         ctk.CTkButton(
             f_kiri,
             text="Setujui Pembayaran (Lunas)",
@@ -144,7 +155,7 @@ class OperatorGUI(ctk.CTk):
         table_frame = ctk.CTkFrame(f_kanan, fg_color="transparent")
         table_frame.pack(fill="both", expand=True, pady=5)
 
-        kolom = ("id_trx", "penyewa", "total", "status")
+        kolom = ("id_trx", "penyewa", "total", "status", "bukti")
         self.tabel_verif = ttk.Treeview(
             table_frame, columns=kolom, show="headings", height=15
         )
@@ -152,10 +163,13 @@ class OperatorGUI(ctk.CTk):
         self.tabel_verif.heading("penyewa", text="Penyewa")
         self.tabel_verif.heading("total", text="Total Biaya")
         self.tabel_verif.heading("status", text="Status")
+        self.tabel_verif.heading("bukti", text="File Bukti Bayar")
+
         self.tabel_verif.column("id_trx", width=50, anchor="center")
-        self.tabel_verif.column("penyewa", width=150, anchor="w")
-        self.tabel_verif.column("total", width=110, anchor="center")
-        self.tabel_verif.column("status", width=90, anchor="center")
+        self.tabel_verif.column("penyewa", width=120, anchor="w")
+        self.tabel_verif.column("total", width=100, anchor="center")
+        self.tabel_verif.column("status", width=80, anchor="center")
+        self.tabel_verif.column("bukti", width=150, anchor="w")
 
         scroll = ttk.Scrollbar(
             table_frame, orient="vertical", command=self.tabel_verif.yview
@@ -173,11 +187,17 @@ class OperatorGUI(ctk.CTk):
         try:
             db = self.koneksi_db()
             cursor = db.cursor(dictionary=True)
-            cursor.execute(
-                "SELECT * FROM transaksi WHERE status_transaksi = %s",
-                ("Pending",),
-            )
+            # Ambil transaksi pending serta informasi path bukti bayar dari tabel pembayaran
+            query = """
+                SELECT t.id_transaksi, t.id_user, t.total_biaya, t.status_transaksi, p.bukti_bayar
+                FROM transaksi AS t
+                LEFT JOIN pembayaran AS p ON t.id_transaksi = p.id_transaksi
+                WHERE t.status_transaksi = 'Pending'
+            """
+            cursor.execute(query)
             for t in cursor.fetchall():
+                path_bukti = t.get("bukti_bayar") or "-"
+                nama_file = os.path.basename(path_bukti) if path_bukti != "-" else "-"
                 self.tabel_verif.insert(
                     "",
                     "end",
@@ -186,12 +206,55 @@ class OperatorGUI(ctk.CTk):
                         f"User ID: {t.get('id_user')}",
                         f"Rp {float(t.get('total_biaya') or 0):,.0f}",
                         t.get("status_transaksi"),
+                        nama_file,
                     ),
                 )
         except mysql.connector.Error as e:
             messagebox.showerror(
                 "Database Error", f"Gagal memuat antrean pembayaran:\n{e}"
             )
+        finally:
+            if cursor:
+                cursor.close()
+            if db and db.is_connected():
+                db.close()
+
+    def lihat_bukti_bayar(self):
+        sel = self.tabel_verif.selection()
+        if not sel:
+            messagebox.showwarning("Peringatan", "Pilih data transaksi pada tabel terlebih dahulu!")
+            return
+
+        item = self.tabel_verif.item(sel[0])
+        id_trx = item.get("values")[0]
+
+        db = None
+        cursor = None
+        try:
+            db = self.koneksi_db()
+            cursor = db.cursor(dictionary=True)
+            cursor.execute("SELECT bukti_bayar FROM pembayaran WHERE id_transaksi = %s", (id_trx,))
+            res = cursor.fetchone()
+
+            if not res or not res.get("bukti_bayar"):
+                messagebox.showinfo("Informasi", "Penyewa belum mengunggah bukti pembayaran untuk transaksi ini.")
+                return
+
+            file_path = res.get("bukti_bayar")
+            if not os.path.exists(file_path):
+                messagebox.showerror("Error", f"File bukti bayar tidak ditemukan di direktori:\n{file_path}")
+                return
+
+            # Membuka file gambar bukti bayar secara otomatis menggunakan aplikasi bawaan OS
+            if sys.platform == "win32":
+                os.startfile(file_path)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", file_path])
+            else:
+                subprocess.Popen(["xdg-open", file_path])
+
+        except mysql.connector.Error as e:
+            messagebox.showerror("Database Error", f"Gagal mengambil data bukti bayar:\n{e}")
         finally:
             if cursor:
                 cursor.close()
@@ -212,6 +275,10 @@ class OperatorGUI(ctk.CTk):
             cursor.execute(
                 "UPDATE transaksi SET status_transaksi = %s WHERE id_transaksi = %s",
                 ("Lunas", id_trx),
+            )
+            cursor.execute(
+                "UPDATE pembayaran SET status_konfirmasi = %s WHERE id_transaksi = %s",
+                ("Diterima", id_trx),
             )
             db.commit()
             messagebox.showinfo(
@@ -245,6 +312,10 @@ class OperatorGUI(ctk.CTk):
                 "UPDATE transaksi SET status_transaksi = %s WHERE id_transaksi = %s",
                 ("Ditolak", id_trx),
             )
+            cursor.execute(
+                "UPDATE pembayaran SET status_konfirmasi = %s WHERE id_transaksi = %s",
+                ("Ditolak", id_trx),
+            )
             db.commit()
             messagebox.showinfo("Informasi", f"Transaksi ID {id_trx} ditolak.")
             self.muat_data_pending()
@@ -260,7 +331,7 @@ class OperatorGUI(ctk.CTk):
                 db.close()
 
     # ==================================================
-    # TAB 2: MANAJEMEN INVENTARIS (TERHUBUNG KE DATABASE)
+    # TAB 2: MANAJEMEN INVENTARIS STUDIO
     # ==================================================
     def setup_tab_inventaris(self):
         self.tab_inventaris.grid_columnconfigure(0, weight=3)
@@ -273,21 +344,33 @@ class OperatorGUI(ctk.CTk):
         f_kiri.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
 
         ctk.CTkLabel(
-            f_kiri, text="Form Kelola Inventaris", font=("Segoe UI", 16, "bold")
+            f_kiri, text="Form Kelola Studio", font=("Segoe UI", 16, "bold")
         ).pack(pady=(15, 10))
 
         self.ent_nama = ctk.CTkEntry(
-            f_kiri, placeholder_text="Nama Alat / Studio", height=35
+            f_kiri, placeholder_text="Nama Studio", height=35
         )
-        self.ent_nama.pack(fill="x", padx=15, pady=8)
-        self.ent_kat = ctk.CTkEntry(
-            f_kiri, placeholder_text="Kategori (Opsional)", height=35
+        self.ent_nama.pack(fill="x", padx=15, pady=6)
+        
+        self.ent_harga = ctk.CTkEntry(
+            f_kiri, placeholder_text="Harga per Jam", height=35
         )
-        self.ent_kat.pack(fill="x", padx=15, pady=8)
-        self.ent_hrg = ctk.CTkEntry(
-            f_kiri, placeholder_text="Tarif per Jam", height=35
+        self.ent_harga.pack(fill="x", padx=15, pady=6)
+
+        self.ent_kapasitas = ctk.CTkEntry(
+            f_kiri, placeholder_text="Kapasitas", height=35
         )
-        self.ent_hrg.pack(fill="x", padx=15, pady=8)
+        self.ent_kapasitas.pack(fill="x", padx=15, pady=6)
+
+        self.ent_fasilitas = ctk.CTkEntry(
+            f_kiri, placeholder_text="Fasilitas", height=35
+        )
+        self.ent_fasilitas.pack(fill="x", padx=15, pady=6)
+
+        self.ent_status = ctk.CTkEntry(
+            f_kiri, placeholder_text="Status Ketersediaan", height=35
+        )
+        self.ent_status.pack(fill="x", padx=15, pady=6)
 
         btn_f = ctk.CTkFrame(f_kiri, fg_color="transparent")
         btn_f.pack(fill="x", padx=15, pady=10)
@@ -296,7 +379,7 @@ class OperatorGUI(ctk.CTk):
             text="Tambah",
             fg_color="#2ecc71",
             width=90,
-            command=self.tambah_alat,
+            command=self.tambah_studio,
         ).pack(side="left", expand=True)
         ctk.CTkButton(
             btn_f,
@@ -304,14 +387,14 @@ class OperatorGUI(ctk.CTk):
             fg_color="#f1c40f",
             text_color="#000",
             width=90,
-            command=self.ubah_alat,
+            command=self.ubah_studio,
         ).pack(side="left", expand=True)
         ctk.CTkButton(
             btn_f,
             text="Hapus",
             fg_color="#e74c3c",
             width=90,
-            command=self.hapus_alat,
+            command=self.hapus_studio,
         ).pack(side="left", expand=True)
 
         f_kanan = ctk.CTkFrame(self.tab_inventaris, fg_color="transparent")
@@ -319,18 +402,23 @@ class OperatorGUI(ctk.CTk):
         table_frame = ctk.CTkFrame(f_kanan, fg_color="transparent")
         table_frame.pack(fill="both", expand=True, pady=5)
 
-        kolom_inv = ("id_alat", "nama", "kategori", "harga")
+        kolom_inv = ("id_studio", "nama", "harga", "kapasitas", "fasilitas", "status")
         self.tabel_inv = ttk.Treeview(
             table_frame, columns=kolom_inv, show="headings", height=15
         )
-        self.tabel_inv.heading("id_alat", text="ID")
-        self.tabel_inv.heading("nama", text="Nama Alat / Studio")
-        self.tabel_inv.heading("kategori", text="Kategori")
-        self.tabel_inv.heading("harga", text="Tarif / Jam")
-        self.tabel_inv.column("id_alat", width=40, anchor="center")
-        self.tabel_inv.column("nama", width=180, anchor="w")
-        self.tabel_inv.column("kategori", width=120, anchor="w")
-        self.tabel_inv.column("harga", width=100, anchor="center")
+        self.tabel_inv.heading("id_studio", text="ID")
+        self.tabel_inv.heading("nama", text="Nama Studio")
+        self.tabel_inv.heading("harga", text="Harga / Jam")
+        self.tabel_inv.heading("kapasitas", text="Kapasitas")
+        self.tabel_inv.heading("fasilitas", text="Fasilitas")
+        self.tabel_inv.heading("status", text="Status")
+
+        self.tabel_inv.column("id_studio", width=40, anchor="center")
+        self.tabel_inv.column("nama", width=160, anchor="w")
+        self.tabel_inv.column("harga", width=90, anchor="center")
+        self.tabel_inv.column("kapasitas", width=60, anchor="center")
+        self.tabel_inv.column("fasilitas", width=180, anchor="w")
+        self.tabel_inv.column("status", width=80, anchor="center")
 
         # Event: klik baris tabel untuk mengisi form otomatis
         self.tabel_inv.bind("<<TreeviewSelect>>", self.pilih_data_inventaris)
@@ -353,21 +441,21 @@ class OperatorGUI(ctk.CTk):
             cursor = db.cursor(dictionary=True)
             cursor.execute("SELECT * FROM studio")
             for s in cursor.fetchall():
-                # Tangani jika kolom kategori tidak ada di database agar tidak error
-                kategori_val = s.get("kategori") if "kategori" in s else "Studio"
                 self.tabel_inv.insert(
                     "",
                     "end",
                     values=(
-                        s.get("id_studio") or s.get("id_alat", "-"),
-                        s.get("nama_studio") or s.get("nama_alat", "-"),
-                        kategori_val,
+                        s.get("id_studio"),
+                        s.get("nama_studio"),
                         f"Rp {float(s.get('harga_per_jam') or 0):,.0f}",
+                        s.get("kapasitas"),
+                        s.get("fasilitas") or "-",
+                        s.get("status_ketersediaan") or "Tersedia",
                     ),
                 )
         except mysql.connector.Error as e:
             messagebox.showerror(
-                "Database Error", f"Gagal memuat inventaris:\n{e}"
+                "Database Error", f"Gagal memuat inventaris studio:\n{e}"
             )
         finally:
             if cursor:
@@ -380,31 +468,40 @@ class OperatorGUI(ctk.CTk):
         if sel:
             item = self.tabel_inv.item(sel[0])
             values = item.get("values")
-            if values and len(values) >= 4:
+            if values and len(values) >= 6:
                 self.ent_nama.delete(0, "end")
                 self.ent_nama.insert(0, str(values[1]))
 
-                self.ent_kat.delete(0, "end")
-                self.ent_kat.insert(0, str(values[2]))
-
                 harga_str = (
-                    str(values[3]).replace("Rp", "").replace(",", "").strip()
+                    str(values[2]).replace("Rp", "").replace(",", "").strip()
                 )
-                self.ent_hrg.delete(0, "end")
-                self.ent_hrg.insert(0, harga_str)
+                self.ent_harga.delete(0, "end")
+                self.ent_harga.insert(0, harga_str)
 
-    def tambah_alat(self):
+                self.ent_kapasitas.delete(0, "end")
+                self.ent_kapasitas.insert(0, str(values[3]))
+
+                self.ent_fasilitas.delete(0, "end")
+                self.ent_fasilitas.insert(0, str(values[4]))
+
+                self.ent_status.delete(0, "end")
+                self.ent_status.insert(0, str(values[5]))
+
+    def tambah_studio(self):
         nama = self.ent_nama.get().strip()
-        harga = self.ent_hrg.get().strip()
+        harga = self.ent_harga.get().strip()
+        kapasitas = self.ent_kapasitas.get().strip()
+        fasilitas = self.ent_fasilitas.get().strip()
+        status = self.ent_status.get().strip() or "Tersedia"
 
-        if not nama or not harga:
+        if not nama or not harga or not kapasitas:
             messagebox.showwarning(
-                "Peringatan", "Nama alat/studio dan harga wajib diisi!"
+                "Peringatan", "Nama studio, harga per jam, dan kapasitas wajib diisi!"
             )
             return
 
-        if not harga.isdigit():
-            messagebox.showwarning("Peringatan", "Tarif per jam harus berupa angka!")
+        if not harga.replace('.', '', 1).isdigit() or not kapasitas.isdigit():
+            messagebox.showwarning("Peringatan", "Harga dan kapasitas harus berupa angka!")
             return
 
         db = None
@@ -412,15 +509,16 @@ class OperatorGUI(ctk.CTk):
         try:
             db = self.koneksi_db()
             cursor = db.cursor()
-            # Query disesuaikan dengan kolom dasar tabel studio (tanpa kategori untuk menghindari error jika kolom belum ada)
-            query = "INSERT INTO studio (nama_studio, harga_per_jam) VALUES (%s, %s)"
-            cursor.execute(query, (nama, int(harga)))
+            query = "INSERT INTO studio (nama_studio, harga_per_jam, kapasitas, fasilitas, status_ketersediaan) VALUES (%s, %s, %s, %s, %s)"
+            cursor.execute(query, (nama, float(harga), int(kapasitas), fasilitas, status))
             db.commit()
 
-            messagebox.showinfo("Berhasil", "Data inventaris berhasil ditambahkan!")
+            messagebox.showinfo("Berhasil", "Data studio berhasil ditambahkan!")
             self.ent_nama.delete(0, "end")
-            self.ent_kat.delete(0, "end")
-            self.ent_hrg.delete(0, "end")
+            self.ent_harga.delete(0, "end")
+            self.ent_kapasitas.delete(0, "end")
+            self.ent_fasilitas.delete(0, "end")
+            self.ent_status.delete(0, "end")
             self.muat_data_inventaris()
 
         except mysql.connector.Error as e:
@@ -433,26 +531,29 @@ class OperatorGUI(ctk.CTk):
             if db and db.is_connected():
                 db.close()
 
-    def ubah_alat(self):
+    def ubah_studio(self):
         sel = self.tabel_inv.selection()
         if not sel:
             messagebox.showwarning(
-                "Peringatan", "Pilih data inventaris yang ingin diubah pada tabel!"
+                "Peringatan", "Pilih data studio yang ingin diubah pada tabel!"
             )
             return
 
         item = self.tabel_inv.item(sel[0])
-        id_alat = item.get("values")[0]
+        id_studio = item.get("values")[0]
 
         nama = self.ent_nama.get().strip()
-        harga = self.ent_hrg.get().strip()
+        harga = self.ent_harga.get().strip()
+        kapasitas = self.ent_kapasitas.get().strip()
+        fasilitas = self.ent_fasilitas.get().strip()
+        status = self.ent_status.get().strip() or "Tersedia"
 
-        if not nama or not harga:
-            messagebox.showwarning("Peringatan", "Nama dan harga tidak boleh kosong!")
+        if not nama or not harga or not kapasitas:
+            messagebox.showwarning("Peringatan", "Nama, harga, dan kapasitas tidak boleh kosong!")
             return
 
-        if not harga.isdigit():
-            messagebox.showwarning("Peringatan", "Tarif per jam harus berupa angka!")
+        if not harga.replace('.', '', 1).isdigit() or not kapasitas.isdigit():
+            messagebox.showwarning("Peringatan", "Harga dan kapasitas harus berupa angka!")
             return
 
         db = None
@@ -460,16 +561,18 @@ class OperatorGUI(ctk.CTk):
         try:
             db = self.koneksi_db()
             cursor = db.cursor()
-            query = "UPDATE studio SET nama_studio = %s, harga_per_jam = %s WHERE id_studio = %s"
-            cursor.execute(query, (nama, int(harga), id_alat))
+            query = "UPDATE studio SET nama_studio = %s, harga_per_jam = %s, kapasitas = %s, fasilitas = %s, status_ketersediaan = %s WHERE id_studio = %s"
+            cursor.execute(query, (nama, float(harga), int(kapasitas), fasilitas, status, id_studio))
             db.commit()
 
             messagebox.showinfo(
-                "Berhasil", f"Data inventaris ID {id_alat} berhasil diperbarui!"
+                "Berhasil", f"Data studio ID {id_studio} berhasil diperbarui!"
             )
             self.ent_nama.delete(0, "end")
-            self.ent_kat.delete(0, "end")
-            self.ent_hrg.delete(0, "end")
+            self.ent_harga.delete(0, "end")
+            self.ent_kapasitas.delete(0, "end")
+            self.ent_fasilitas.delete(0, "end")
+            self.ent_status.delete(0, "end")
             self.muat_data_inventaris()
 
         except mysql.connector.Error as e:
@@ -482,21 +585,21 @@ class OperatorGUI(ctk.CTk):
             if db and db.is_connected():
                 db.close()
 
-    def hapus_alat(self):
+    def hapus_studio(self):
         sel = self.tabel_inv.selection()
         if not sel:
             messagebox.showwarning(
-                "Peringatan", "Pilih data inventaris yang ingin dihapus pada tabel!"
+                "Peringatan", "Pilih data studio yang ingin dihapus pada tabel!"
             )
             return
 
         item = self.tabel_inv.item(sel[0])
-        id_alat = item.get("values")[0]
-        nama_alat = item.get("values")[1]
+        id_studio = item.get("values")[0]
+        nama_studio = item.get("values")[1]
 
         if not messagebox.askyesno(
             "Konfirmasi Hapus",
-            f"Apakah Anda yakin ingin menghapus '{nama_alat}' dari inventaris?",
+            f"Apakah Anda yakin ingin menghapus '{nama_studio}' dari inventaris?",
         ):
             return
 
@@ -506,13 +609,15 @@ class OperatorGUI(ctk.CTk):
             db = self.koneksi_db()
             cursor = db.cursor()
             query = "DELETE FROM studio WHERE id_studio = %s"
-            cursor.execute(query, (id_alat,))
+            cursor.execute(query, (id_studio,))
             db.commit()
 
-            messagebox.showinfo("Berhasil", "Data inventaris berhasil dihapus.")
+            messagebox.showinfo("Berhasil", "Data studio berhasil dihapus.")
             self.ent_nama.delete(0, "end")
-            self.ent_kat.delete(0, "end")
-            self.ent_hrg.delete(0, "end")
+            self.ent_harga.delete(0, "end")
+            self.ent_kapasitas.delete(0, "end")
+            self.ent_fasilitas.delete(0, "end")
+            self.ent_status.delete(0, "end")
             self.muat_data_inventaris()
 
         except mysql.connector.Error as e:
@@ -610,10 +715,53 @@ class OperatorGUI(ctk.CTk):
                 db.close()
 
     def aksi_validasi(self):
-        if not self.tabel_kembali.selection():
+        sel = self.tabel_kembali.selection()
+        if not sel:
             messagebox.showwarning("Peringatan", "Pilih transaksi peminjaman!")
             return
-        messagebox.showinfo("Berhasil", "Kondisi barang divalidasi aman.")
+
+        id_trx = self.tabel_kembali.item(sel[0], "values")[0]
+
+        pilihan = messagebox.askyesnocancel(
+            "Validasi Kondisi Barang",
+            f"Validasi untuk Transaksi ID {id_trx}:\n\n"
+            "Klik 'Yes' jika kondisi barang AMAN (Selesai).\n"
+            "Klik 'No' jika kondisi barang TIDAK AMAN / RUSAK (Bermasalah).\n"
+            "Klik 'Cancel' untuk batal.",
+        )
+
+        if pilihan is None:
+            return
+
+        if pilihan:
+            status_trx = "Selesai"
+            pesan = f"Transaksi ID {id_trx} divalidasi AMAN dan status diubah menjadi Selesai."
+        else:
+            status_trx = "Bermasalah"
+            pesan = f"Peringatan: Transaksi ID {id_trx} dilaporkan TIDAK AMAN / RUSAK!"
+
+        db = None
+        cursor = None
+        try:
+            db = self.koneksi_db()
+            cursor = db.cursor()
+            cursor.execute(
+                "UPDATE transaksi SET status_transaksi = %s WHERE id_transaksi = %s",
+                (status_trx, id_trx),
+            )
+            db.commit()
+            messagebox.showinfo("Informasi Validasi", pesan)
+            self.muat_data_pengembalian()
+            self.muat_data_riwayat()
+        except mysql.connector.Error as e:
+            if db:
+                db.rollback()
+            messagebox.showerror("Error Database", str(e))
+        finally:
+            if cursor:
+                cursor.close()
+            if db and db.is_connected():
+                db.close()
 
     # ==================================================
     # TAB 4: RIWAYAT TRANSAKSI

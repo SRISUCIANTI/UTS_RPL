@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import customtkinter as ctk
 from tkinter import ttk, messagebox
@@ -10,6 +11,59 @@ sys.path.append(current_dir)
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
+
+
+# ---------------------------------------------------------------
+# FUNGSI BANTU MANAJEMEN ALAT (murni, tanpa GUI/DB agar mudah diuji)
+# ---------------------------------------------------------------
+def parse_nominal(teks):
+    """Ubah teks harga gaya Indonesia menjadi float.
+    Diterima: 25000 | 25.000 | 25.000,50 | 25,5 | Rp 25.000
+    Ditolak (ValueError): kosong, huruf, negatif, nan/inf, notasi ilmiah."""
+    t = str(teks).strip().replace(" ", "")
+    if t.lower().startswith("rp"):
+        t = t[2:]
+    if "," in t:  # koma = desimal, titik = pemisah ribuan
+        t = t.replace(".", "").replace(",", ".")
+    elif re.fullmatch(r"\d{1,3}(\.\d{3})+", t):  # 25.000 / 1.250.000 = ribuan
+        t = t.replace(".", "")
+    if not re.fullmatch(r"\d+(\.\d+)?", t):
+        raise ValueError("bukan angka valid")
+    return float(t)
+
+
+def validasi_alat(nama, harga_teks, stok_teks):
+    """Validasi input form alat. Mengembalikan (True, (nama, harga, stok))
+    atau (False, pesan_error)."""
+    nama = (nama or "").strip()
+    if not nama:
+        return False, "Nama alat wajib diisi!"
+    try:
+        harga = parse_nominal(harga_teks)
+    except ValueError:
+        return False, "Harga sewa per hari harus berupa angka (contoh: 25.000)."
+    if harga <= 0:
+        return False, "Harga sewa per hari harus lebih dari 0."
+    stok_teks = (stok_teks or "").strip()
+    if not re.fullmatch(r"\d+", stok_teks):
+        return False, "Stok harus berupa bilangan bulat 0 atau lebih."
+    return True, (nama, harga, int(stok_teks))
+
+
+def format_rupiah(nilai):
+    """Rp 25.000 (tanpa desimal bila bulat) / Rp 25.000,50."""
+    nilai = float(nilai or 0)
+    if nilai == int(nilai):
+        teks = f"{int(nilai):,}".replace(",", ".")
+    else:
+        teks = f"{nilai:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"Rp {teks}"
+
+
+def _koneksi():
+    return mysql.connector.connect(
+        host="localhost", user="root", password="", database="artstudio_rent"
+    )
 
 
 class OperatorGUI(ctk.CTk):
@@ -78,12 +132,14 @@ class OperatorGUI(ctk.CTk):
         self.tab_view.grid(row=1, column=0, sticky="nsew", padx=15, pady=10)
 
         self.tab_verifikasi = self.tab_view.add("Persetujuan & Bukti Transfer")
-        self.tab_inventaris = self.tab_view.add("Manajemen Inventaris (CRUD)")
+        self.tab_inventaris = self.tab_view.add("Manajemen Studio (CRUD)")
+        self.tab_alat = self.tab_view.add("Manajemen Alat (CRUD)")
         self.tab_pengembalian = self.tab_view.add("Batas Waktu & Validasi Barang")
         self.tab_riwayat = self.tab_view.add("Riwayat Transaksi")
 
         self.setup_tab_verifikasi()
         self.setup_tab_inventaris()
+        self.setup_tab_alat()
         self.setup_tab_pengembalian()
         self.setup_tab_riwayat()
 
@@ -444,6 +500,242 @@ class OperatorGUI(ctk.CTk):
             self.muat_data_inventaris()
         except Exception as e:
             messagebox.showerror("Error", f"{e}")
+        finally:
+            if cursor: cursor.close()
+            if db and db.is_connected(): db.close()
+
+    # ================= TAB 2B: MANAJEMEN ALAT (CRUD) =================
+    def setup_tab_alat(self):
+        self._alat_cache = {}  # id_alat -> baris DB, supaya form terisi tanpa parsing teks tabel
+
+        self.tab_alat.grid_columnconfigure(0, weight=3)
+        self.tab_alat.grid_columnconfigure(1, weight=5)
+        self.tab_alat.grid_rowconfigure(0, weight=1)
+
+        f_kiri = ctk.CTkFrame(self.tab_alat, fg_color="#222222", corner_radius=10)
+        f_kiri.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+
+        ctk.CTkLabel(f_kiri, text="Form Kelola Alat", font=("Segoe UI", 16, "bold")).pack(pady=(15, 10))
+
+        self.ent_alat_nama = ctk.CTkEntry(f_kiri, placeholder_text="Nama Alat", height=35)
+        self.ent_alat_nama.pack(fill="x", padx=15, pady=6)
+        self.ent_alat_harga = ctk.CTkEntry(f_kiri, placeholder_text="Harga Sewa per Hari (contoh: 25.000)", height=35)
+        self.ent_alat_harga.pack(fill="x", padx=15, pady=6)
+        self.ent_alat_stok = ctk.CTkEntry(f_kiri, placeholder_text="Stok (bilangan bulat, minimal 0)", height=35)
+        self.ent_alat_stok.pack(fill="x", padx=15, pady=6)
+        self.ent_alat_deskripsi = ctk.CTkEntry(f_kiri, placeholder_text="Deskripsi (opsional)", height=35)
+        self.ent_alat_deskripsi.pack(fill="x", padx=15, pady=6)
+
+        btn_f = ctk.CTkFrame(f_kiri, fg_color="transparent")
+        btn_f.pack(fill="x", padx=15, pady=(10, 4))
+        ctk.CTkButton(btn_f, text="Tambah", fg_color="#2ecc71", width=90, command=self.tambah_alat).pack(side="left", expand=True)
+        ctk.CTkButton(btn_f, text="Ubah", fg_color="#f1c40f", text_color="#000", width=90, command=self.ubah_alat).pack(side="left", expand=True)
+        ctk.CTkButton(btn_f, text="Hapus", fg_color="#e74c3c", width=90, command=self.hapus_alat).pack(side="left", expand=True)
+
+        ctk.CTkButton(
+            f_kiri, text="Bersihkan Form", fg_color="#555555", hover_color="#666666",
+            height=30, command=self.bersihkan_form_alat,
+        ).pack(fill="x", padx=15, pady=(6, 10))
+
+        ctk.CTkLabel(
+            f_kiri,
+            text="Klik baris pada tabel untuk mengisi form,\nlalu tekan Ubah atau Hapus.\nAlat yang pernah disewa tidak bisa dihapus\n(set stok 0 sebagai gantinya).",
+            font=("Segoe UI", 11),
+            text_color="#9aa0a6",
+            justify="left",
+        ).pack(padx=15, pady=(0, 10), anchor="w")
+
+        f_kanan = ctk.CTkFrame(self.tab_alat, fg_color="transparent")
+        f_kanan.grid(row=0, column=1, padx=10, pady=10, sticky="nsew")
+        table_frame = ctk.CTkFrame(f_kanan, fg_color="transparent")
+        table_frame.pack(fill="both", expand=True, pady=5)
+
+        kolom_alat = ("id_alat", "nama", "harga", "stok", "deskripsi")
+        self.tabel_alat = ttk.Treeview(table_frame, columns=kolom_alat, show="headings", height=15)
+        self.tabel_alat.heading("id_alat", text="ID")
+        self.tabel_alat.heading("nama", text="Nama Alat")
+        self.tabel_alat.heading("harga", text="Harga / Hari")
+        self.tabel_alat.heading("stok", text="Stok")
+        self.tabel_alat.heading("deskripsi", text="Deskripsi")
+
+        self.tabel_alat.column("id_alat", width=40, anchor="center")
+        self.tabel_alat.column("nama", width=180, anchor="w")
+        self.tabel_alat.column("harga", width=100, anchor="center")
+        self.tabel_alat.column("stok", width=60, anchor="center")
+        self.tabel_alat.column("deskripsi", width=220, anchor="w")
+
+        self.tabel_alat.tag_configure("habis", foreground="#ff8a65")  # stok 0 dibuat oranye
+        self.tabel_alat.bind("<<TreeviewSelect>>", self.pilih_alat)
+
+        scroll = ttk.Scrollbar(table_frame, orient="vertical", command=self.tabel_alat.yview)
+        self.tabel_alat.configure(yscrollcommand=scroll.set)
+        self.tabel_alat.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        self.muat_data_alat()
+
+    def muat_data_alat(self):
+        for r in self.tabel_alat.get_children():
+            self.tabel_alat.delete(r)
+        self._alat_cache = {}
+        db = None
+        cursor = None
+        try:
+            db = _koneksi()
+            cursor = db.cursor(dictionary=True)
+            cursor.execute("SELECT * FROM alat ORDER BY id_alat")
+            for a in cursor.fetchall():
+                id_alat = a.get("id_alat")
+                self._alat_cache[id_alat] = a
+                stok = int(a.get("stok") or 0)
+                self.tabel_alat.insert(
+                    "",
+                    "end",
+                    iid=str(id_alat),
+                    values=(
+                        id_alat,
+                        a.get("nama_alat"),
+                        format_rupiah(a.get("harga_per_hari")),
+                        stok,
+                        a.get("deskripsi") or "-",
+                    ),
+                    tags=("habis",) if stok == 0 else (),
+                )
+        except Exception as e:
+            messagebox.showerror("Error", f"Gagal memuat data alat:\n{e}")
+        finally:
+            if cursor: cursor.close()
+            if db and db.is_connected(): db.close()
+
+    def bersihkan_form_alat(self):
+        for ent in (self.ent_alat_nama, self.ent_alat_harga, self.ent_alat_stok, self.ent_alat_deskripsi):
+            ent.delete(0, "end")
+        self.tabel_alat.selection_remove(self.tabel_alat.selection())
+
+    def pilih_alat(self, event=None):
+        sel = self.tabel_alat.selection()
+        if not sel:
+            return
+        a = self._alat_cache.get(int(sel[0]))
+        if not a:
+            return
+        harga = float(a.get("harga_per_hari") or 0)
+        isian = (
+            (self.ent_alat_nama, str(a.get("nama_alat") or "")),
+            (self.ent_alat_harga, str(int(harga)) if harga == int(harga) else str(harga)),
+            (self.ent_alat_stok, str(int(a.get("stok") or 0))),
+            (self.ent_alat_deskripsi, str(a.get("deskripsi") or "")),
+        )
+        for ent, nilai in isian:
+            ent.delete(0, "end")
+            ent.insert(0, nilai)
+
+    def _nama_alat_sudah_ada(self, cursor, nama, kecuali_id=None):
+        cursor.execute(
+            "SELECT id_alat FROM alat WHERE LOWER(nama_alat) = LOWER(%s)", (nama,)
+        )
+        return any(r[0] != kecuali_id for r in cursor.fetchall())
+
+    def tambah_alat(self):
+        ok, hasil = validasi_alat(
+            self.ent_alat_nama.get(), self.ent_alat_harga.get(), self.ent_alat_stok.get()
+        )
+        if not ok:
+            messagebox.showwarning("Peringatan", hasil)
+            return
+        nama, harga, stok = hasil
+        deskripsi = self.ent_alat_deskripsi.get().strip() or None
+
+        db = None
+        cursor = None
+        try:
+            db = _koneksi()
+            cursor = db.cursor()
+            if self._nama_alat_sudah_ada(cursor, nama):
+                messagebox.showwarning("Peringatan", f"Alat '{nama}' sudah ada di daftar!")
+                return
+            cursor.execute(
+                "INSERT INTO alat (nama_alat, harga_per_hari, stok, deskripsi) VALUES (%s, %s, %s, %s)",
+                (nama, harga, stok, deskripsi),
+            )
+            db.commit()
+            messagebox.showinfo("Berhasil", f"Alat '{nama}' berhasil ditambahkan.")
+            self.bersihkan_form_alat()
+            self.muat_data_alat()
+        except Exception as e:
+            if db: db.rollback()
+            messagebox.showerror("Error", f"Gagal menambah alat:\n{e}")
+        finally:
+            if cursor: cursor.close()
+            if db and db.is_connected(): db.close()
+
+    def ubah_alat(self):
+        sel = self.tabel_alat.selection()
+        if not sel:
+            messagebox.showwarning("Peringatan", "Pilih alat pada tabel yang akan diubah!")
+            return
+        id_alat = int(sel[0])
+        ok, hasil = validasi_alat(
+            self.ent_alat_nama.get(), self.ent_alat_harga.get(), self.ent_alat_stok.get()
+        )
+        if not ok:
+            messagebox.showwarning("Peringatan", hasil)
+            return
+        nama, harga, stok = hasil
+        deskripsi = self.ent_alat_deskripsi.get().strip() or None
+
+        db = None
+        cursor = None
+        try:
+            db = _koneksi()
+            cursor = db.cursor()
+            if self._nama_alat_sudah_ada(cursor, nama, kecuali_id=id_alat):
+                messagebox.showwarning("Peringatan", f"Nama '{nama}' sudah dipakai alat lain!")
+                return
+            cursor.execute(
+                "UPDATE alat SET nama_alat = %s, harga_per_hari = %s, stok = %s, deskripsi = %s WHERE id_alat = %s",
+                (nama, harga, stok, deskripsi, id_alat),
+            )
+            db.commit()
+            messagebox.showinfo("Berhasil", f"Alat '{nama}' berhasil diperbarui.")
+            self.muat_data_alat()
+        except Exception as e:
+            if db: db.rollback()
+            messagebox.showerror("Error", f"Gagal mengubah alat:\n{e}")
+        finally:
+            if cursor: cursor.close()
+            if db and db.is_connected(): db.close()
+
+    def hapus_alat(self):
+        sel = self.tabel_alat.selection()
+        if not sel:
+            messagebox.showwarning("Peringatan", "Pilih alat pada tabel yang akan dihapus!")
+            return
+        id_alat = int(sel[0])
+        nama = (self._alat_cache.get(id_alat) or {}).get("nama_alat", f"ID {id_alat}")
+
+        db = None
+        cursor = None
+        try:
+            db = _koneksi()
+            cursor = db.cursor()
+            cursor.execute("SELECT COUNT(*) FROM detail_transaksi WHERE id_alat = %s", (id_alat,))
+            if cursor.fetchone()[0] > 0:
+                messagebox.showwarning(
+                    "Tidak Bisa Dihapus",
+                    f"Alat '{nama}' pernah dipakai dalam transaksi sehingga tidak bisa dihapus.\n"
+                    "Ubah stok menjadi 0 bila alat tidak lagi disewakan.",
+                )
+                return
+            if not messagebox.askyesno("Konfirmasi", f"Yakin ingin menghapus alat '{nama}'?"):
+                return
+            cursor.execute("DELETE FROM alat WHERE id_alat = %s", (id_alat,))
+            db.commit()
+            messagebox.showinfo("Berhasil", f"Alat '{nama}' dihapus.")
+            self.bersihkan_form_alat()
+            self.muat_data_alat()
+        except Exception as e:
+            if db: db.rollback()
+            messagebox.showerror("Error", f"Gagal menghapus alat:\n{e}")
         finally:
             if cursor: cursor.close()
             if db and db.is_connected(): db.close()

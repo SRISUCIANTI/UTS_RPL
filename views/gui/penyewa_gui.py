@@ -12,6 +12,50 @@ ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
 
+# ---------------------------------------------------------------
+# FUNGSI BANTU TAMPILAN KATALOG (murni, tanpa GUI/DB agar mudah diuji)
+# ---------------------------------------------------------------
+def format_rupiah(nilai):
+    """Rp 25.000 (tanpa desimal bila bulat) / Rp 25.000,50."""
+    nilai = float(nilai or 0)
+    if nilai == int(nilai):
+        teks = f"{int(nilai):,}".replace(",", ".")
+    else:
+        teks = f"{nilai:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"Rp {teks}"
+
+
+def format_jam(nilai):
+    """Kolom TIME MySQL (timedelta / time / 'HH:MM:SS') -> '10.00'. None -> None.
+    Aman untuk 24.00 (timedelta 1 hari)."""
+    if nilai is None:
+        return None
+    if isinstance(nilai, timedelta):
+        jam, sisa = divmod(int(nilai.total_seconds()), 3600)
+        menit = sisa // 60
+    elif hasattr(nilai, "hour"):
+        jam, menit = nilai.hour, nilai.minute
+    else:
+        bagian = str(nilai).split(":")
+        jam, menit = int(bagian[0]), int(bagian[1])
+    return f"{jam:02d}.{menit:02d}"
+
+
+def format_tanggal(nilai):
+    return nilai.strftime("%d-%m-%Y") if hasattr(nilai, "strftime") else str(nilai)
+
+
+def format_slot_jadwal(tgl_sewa, tgl_kembali, jam_mulai, jam_selesai):
+    """Satu baris jadwal terisi -> (teks tanggal, teks jam).
+    Baris tanpa jam dianggap memenuhi seharian (aturan Plan.md poin 6)."""
+    tgl = format_tanggal(tgl_sewa)
+    if tgl_kembali and tgl_kembali != tgl_sewa:
+        tgl += f" s/d {format_tanggal(tgl_kembali)}"
+    mulai, selesai = format_jam(jam_mulai), format_jam(jam_selesai)
+    jam = f"{mulai} - {selesai}" if mulai and selesai else "Seharian"
+    return tgl, jam
+
+
 class PenyewaGUI(ctk.CTk):
     def __init__(self, user):
         super().__init__()
@@ -93,21 +137,31 @@ class PenyewaGUI(ctk.CTk):
         self.setup_tab_riwayat()
 
     def setup_tab_katalog(self):
+        self._studio_status = {}  # id_studio -> status_ketersediaan
+
         self.tab_katalog.grid_columnconfigure(0, weight=1)
-        self.tab_katalog.grid_rowconfigure(1, weight=1)
+        self.tab_katalog.grid_rowconfigure(1, weight=3)
+        self.tab_katalog.grid_rowconfigure(3, weight=2)
 
         ctk.CTkLabel(
             self.tab_katalog,
             text="Katalog Studio Seni",
             font=("Segoe UI", 16, "bold"),
-        ).grid(row=0, column=0, sticky="w", padx=10, pady=(15, 5))
+        ).grid(row=0, column=0, sticky="w", padx=10, pady=(10, 4))
 
-        container = ctk.CTkFrame(self.tab_katalog, fg_color="transparent")
-        container.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+        # ---- baris atas: tabel studio (kiri) + jadwal terisi (kanan) ----
+        atas = ctk.CTkFrame(self.tab_katalog, fg_color="transparent")
+        atas.grid(row=1, column=0, sticky="nsew", padx=10, pady=4)
+        atas.grid_columnconfigure(0, weight=5)
+        atas.grid_columnconfigure(1, weight=3)
+        atas.grid_rowconfigure(0, weight=1)
+
+        f_studio = ctk.CTkFrame(atas, fg_color="transparent")
+        f_studio.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
 
         kolom = ("id_studio", "nama", "harga", "kapasitas", "fasilitas", "status")
         self.tabel_katalog = ttk.Treeview(
-            container, columns=kolom, show="headings", height=13
+            f_studio, columns=kolom, show="headings", height=6
         )
         self.tabel_katalog.heading("id_studio", text="ID")
         self.tabel_katalog.heading("nama", text="Nama Studio")
@@ -117,31 +171,108 @@ class PenyewaGUI(ctk.CTk):
         self.tabel_katalog.heading("status", text="Status")
 
         self.tabel_katalog.column("id_studio", width=40, anchor="center")
-        self.tabel_katalog.column("nama", width=180, anchor="w")
+        self.tabel_katalog.column("nama", width=150, anchor="w")
         self.tabel_katalog.column("harga", width=90, anchor="center")
-        self.tabel_katalog.column("kapasitas", width=60, anchor="center")
-        self.tabel_katalog.column("fasilitas", width=220, anchor="w")
-        self.tabel_katalog.column("status", width=80, anchor="center")
+        self.tabel_katalog.column("kapasitas", width=65, anchor="center")
+        self.tabel_katalog.column("fasilitas", width=200, anchor="w")
+        self.tabel_katalog.column("status", width=85, anchor="center")
+        self.tabel_katalog.bind("<<TreeviewSelect>>", self.pilih_studio_katalog)
 
         scroll = ttk.Scrollbar(
-            container, orient="vertical", command=self.tabel_katalog.yview
+            f_studio, orient="vertical", command=self.tabel_katalog.yview
         )
         self.tabel_katalog.configure(yscrollcommand=scroll.set)
         self.tabel_katalog.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
+
+        f_jadwal = ctk.CTkFrame(atas, fg_color="#222222", corner_radius=10)
+        f_jadwal.grid(row=0, column=1, sticky="nsew")
+
+        self.lbl_judul_jadwal = ctk.CTkLabel(
+            f_jadwal,
+            text="Jadwal Terisi",
+            font=("Segoe UI", 13, "bold"),
+        )
+        self.lbl_judul_jadwal.pack(anchor="w", padx=12, pady=(10, 4))
+
+        f_tabel_jadwal = ctk.CTkFrame(f_jadwal, fg_color="transparent")
+        f_tabel_jadwal.pack(fill="both", expand=True, padx=10)
+
+        self.tabel_jadwal = ttk.Treeview(
+            f_tabel_jadwal, columns=("tanggal", "jam"), show="headings", height=4
+        )
+        self.tabel_jadwal.heading("tanggal", text="Tanggal")
+        self.tabel_jadwal.heading("jam", text="Jam")
+        self.tabel_jadwal.column("tanggal", width=150, anchor="center")
+        self.tabel_jadwal.column("jam", width=110, anchor="center")
+        scroll_j = ttk.Scrollbar(
+            f_tabel_jadwal, orient="vertical", command=self.tabel_jadwal.yview
+        )
+        self.tabel_jadwal.configure(yscrollcommand=scroll_j.set)
+        self.tabel_jadwal.pack(side="left", fill="both", expand=True)
+        scroll_j.pack(side="right", fill="y")
+
+        self.lbl_info_jadwal = ctk.CTkLabel(
+            f_jadwal,
+            text="Pilih studio pada tabel untuk melihat jadwalnya.",
+            font=("Segoe UI", 11),
+            text_color="#9aa0a6",
+            justify="left",
+            wraplength=300,
+        )
+        self.lbl_info_jadwal.pack(anchor="w", padx=12, pady=(6, 10))
+
+        # ---- baris bawah: katalog alat ----
+        ctk.CTkLabel(
+            self.tab_katalog,
+            text="Katalog Alat Lukis",
+            font=("Segoe UI", 16, "bold"),
+        ).grid(row=2, column=0, sticky="w", padx=10, pady=(10, 4))
+
+        f_alat = ctk.CTkFrame(self.tab_katalog, fg_color="transparent")
+        f_alat.grid(row=3, column=0, sticky="nsew", padx=10, pady=4)
+
+        kolom_alat = ("id_alat", "nama", "harga", "stok", "deskripsi", "status")
+        self.tabel_alat = ttk.Treeview(
+            f_alat, columns=kolom_alat, show="headings", height=5
+        )
+        self.tabel_alat.heading("id_alat", text="ID")
+        self.tabel_alat.heading("nama", text="Nama Alat")
+        self.tabel_alat.heading("harga", text="Harga / Hari")
+        self.tabel_alat.heading("stok", text="Stok")
+        self.tabel_alat.heading("deskripsi", text="Deskripsi")
+        self.tabel_alat.heading("status", text="Ketersediaan")
+
+        self.tabel_alat.column("id_alat", width=40, anchor="center")
+        self.tabel_alat.column("nama", width=200, anchor="w")
+        self.tabel_alat.column("harga", width=110, anchor="center")
+        self.tabel_alat.column("stok", width=60, anchor="center")
+        self.tabel_alat.column("deskripsi", width=330, anchor="w")
+        self.tabel_alat.column("status", width=100, anchor="center")
+        self.tabel_alat.tag_configure("habis", foreground="#ff8a65")  # stok 0 = oranye
+
+        scroll_a = ttk.Scrollbar(
+            f_alat, orient="vertical", command=self.tabel_alat.yview
+        )
+        self.tabel_alat.configure(yscrollcommand=scroll_a.set)
+        self.tabel_alat.pack(side="left", fill="both", expand=True)
+        scroll_a.pack(side="right", fill="y")
 
         ctk.CTkButton(
             self.tab_katalog,
             text="Segarkan Katalog",
             fg_color="#3498db",
             command=self.muat_katalog,
-        ).grid(row=2, column=0, sticky="ew", padx=10, pady=10)
+        ).grid(row=4, column=0, sticky="ew", padx=10, pady=10)
 
         self.muat_katalog()
 
     def muat_katalog(self):
+        """Muat ulang studio, jadwal studio terpilih, dan alat."""
+        pilihan_lama = self.tabel_katalog.selection()
         for row in self.tabel_katalog.get_children():
             self.tabel_katalog.delete(row)
+        self._studio_status = {}
 
         db = None
         cursor = None
@@ -153,23 +284,142 @@ class PenyewaGUI(ctk.CTk):
                 database="artstudio_rent",
             )
             cursor = db.cursor(dictionary=True)
-            cursor.execute("SELECT * FROM studio")
+            cursor.execute("SELECT * FROM studio ORDER BY id_studio")
             for s in cursor.fetchall():
+                id_studio = s.get("id_studio")
+                status = s.get("status_ketersediaan") or "Tersedia"
+                self._studio_status[id_studio] = status
                 self.tabel_katalog.insert(
                     "",
                     "end",
+                    iid=str(id_studio),
                     values=(
-                        s.get("id_studio"),
+                        id_studio,
                         s.get("nama_studio"),
-                        f"Rp {float(s.get('harga_per_jam') or 0):,.0f}",
+                        format_rupiah(s.get("harga_per_jam")),
                         s.get("kapasitas"),
                         s.get("fasilitas") or "-",
-                        s.get("status_ketersediaan") or "Tersedia",
+                        status,
                     ),
                 )
         except mysql.connector.Error as err:
             messagebox.showerror(
                 "Database Error", f"Gagal memuat katalog studio:\n{err}"
+            )
+        finally:
+            if cursor:
+                cursor.close()
+            if db and db.is_connected():
+                db.close()
+
+        # pertahankan studio yang tadi dipilih; bila tidak ada, pilih yang pertama
+        semua = self.tabel_katalog.get_children()
+        if semua:
+            target = pilihan_lama[0] if pilihan_lama and pilihan_lama[0] in semua else semua[0]
+            self.tabel_katalog.selection_set(target)  # memicu muat_jadwal
+        else:
+            self.muat_jadwal(None)
+
+        self.muat_alat()
+
+    def pilih_studio_katalog(self, event=None):
+        sel = self.tabel_katalog.selection()
+        if sel:
+            self.muat_jadwal(int(sel[0]))
+
+    def muat_jadwal(self, id_studio):
+        """Jadwal terisi satu studio: hanya booking Lunas masa kini dan depan,
+        tanpa nama penyewa (sama dengan aturan di versi CLI)."""
+        for row in self.tabel_jadwal.get_children():
+            self.tabel_jadwal.delete(row)
+        if id_studio is None:
+            self.lbl_judul_jadwal.configure(text="Jadwal Terisi")
+            self.lbl_info_jadwal.configure(text="Belum ada studio di katalog.")
+            return
+
+        nama = ""
+        item = self.tabel_katalog.item(str(id_studio)).get("values")
+        if item and len(item) > 1:
+            nama = str(item[1])
+        self.lbl_judul_jadwal.configure(text=f"Jadwal Terisi — {nama}" if nama else "Jadwal Terisi")
+
+        status = self._studio_status.get(id_studio, "Tersedia")
+        catatan = []
+        if status == "Maintenance":
+            catatan.append("Studio sedang dalam perawatan (Maintenance), belum bisa dipesan.")
+        elif status == "Dibooking":
+            catatan.append("Studio ditutup/penuh hari ini oleh operator (Dibooking).")
+
+        db = None
+        cursor = None
+        try:
+            db = mysql.connector.connect(
+                host="localhost", user="root", password="", database="artstudio_rent"
+            )
+            cursor = db.cursor(dictionary=True)
+            cursor.execute(
+                """
+                SELECT t.tgl_sewa, t.tgl_kembali_rencana, d.jam_mulai, d.jam_selesai
+                FROM transaksi t
+                JOIN detail_transaksi d ON d.id_transaksi = t.id_transaksi
+                WHERE d.id_studio = %s
+                  AND t.status_transaksi = 'Lunas'
+                  AND t.tgl_kembali_rencana >= CURDATE()
+                ORDER BY t.tgl_sewa, d.jam_mulai
+                """,
+                (id_studio,),
+            )
+            baris = cursor.fetchall()
+            for b in baris:
+                tgl, jam = format_slot_jadwal(
+                    b.get("tgl_sewa"),
+                    b.get("tgl_kembali_rencana"),
+                    b.get("jam_mulai"),
+                    b.get("jam_selesai"),
+                )
+                self.tabel_jadwal.insert("", "end", values=(tgl, jam))
+            if not baris:
+                catatan.append("Belum ada jadwal terisi, semua jam tersedia.")
+            catatan.append("Studio tutup pukul 22.00.")
+        except mysql.connector.Error as err:
+            catatan.append(f"Gagal memuat jadwal: {err}")
+        finally:
+            if cursor:
+                cursor.close()
+            if db and db.is_connected():
+                db.close()
+        self.lbl_info_jadwal.configure(text="\n".join(catatan))
+
+    def muat_alat(self):
+        for row in self.tabel_alat.get_children():
+            self.tabel_alat.delete(row)
+
+        db = None
+        cursor = None
+        try:
+            db = mysql.connector.connect(
+                host="localhost", user="root", password="", database="artstudio_rent"
+            )
+            cursor = db.cursor(dictionary=True)
+            cursor.execute("SELECT * FROM alat ORDER BY id_alat")
+            for a in cursor.fetchall():
+                stok = int(a.get("stok") or 0)
+                self.tabel_alat.insert(
+                    "",
+                    "end",
+                    values=(
+                        a.get("id_alat"),
+                        a.get("nama_alat"),
+                        format_rupiah(a.get("harga_per_hari")),
+                        stok,
+                        a.get("deskripsi") or "-",
+                        "Tersedia" if stok > 0 else "Habis",
+                    ),
+                    tags=("habis",) if stok == 0 else (),
+                )
+        except mysql.connector.Error as err:
+            messagebox.showerror(
+                "Database Error", f"Gagal memuat katalog alat:\n{err}"
             )
         finally:
             if cursor:

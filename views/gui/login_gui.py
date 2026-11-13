@@ -25,11 +25,6 @@ MODE_AWAL = "Light"  # mode saat aplikasi dibuka: "Light" atau "Dark"
 ctk.set_appearance_mode(MODE_AWAL)
 ctk.set_default_color_theme("blue")
 
-# ---------------------------------------------------------------
-# LOGO — ganti LOGO_PATH dengan lokasi file logo kamu.
-# Mode terang: assets/logo.png | Mode gelap: assets/logo_dark.png (di root project).
-# Disarankan PNG transparan; rasio gambar dijaga otomatis.
-# ---------------------------------------------------------------
 def _cari_root():
     """Naik dari folder file ini sampai ketemu folder yang berisi main.py atau assets/."""
     awal = os.path.dirname(os.path.abspath(__file__))

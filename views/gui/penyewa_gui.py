@@ -6,7 +6,17 @@ import mysql.connector
 from datetime import date, timedelta
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(current_dir)
+project_root = os.path.dirname(os.path.dirname(current_dir))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+if current_dir not in sys.path:
+    sys.path.append(current_dir)
+
+from controllers.transaksi_controller import TransaksiController
+from models.studio_model import StudioModel
+from models.alat_model import AlatModel
+
+JAM_TUTUP = 22  # studio tutup pukul 22.00 (sama dengan controller)
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -43,6 +53,12 @@ def format_jam(nilai):
 
 def format_tanggal(nilai):
     return nilai.strftime("%d-%m-%Y") if hasattr(nilai, "strftime") else str(nilai)
+
+
+def daftar_tanggal(jumlah_hari=60):
+    """Pilihan tanggal YYYY-MM-DD dari hari ini ke depan (tanggal masa lalu ditolak aturan bisnis)."""
+    hari_ini = date.today()
+    return [(hari_ini + timedelta(days=i)).isoformat() for i in range(jumlah_hari)]
 
 
 def format_slot_jadwal(tgl_sewa, tgl_kembali, jam_mulai, jam_selesai):
@@ -127,7 +143,7 @@ class PenyewaGUI(ctk.CTk):
         )
 
         self.tab_katalog = self.tab_view.add("Daftar Studio & Alat")
-        self.tab_pesan = self.tab_view.add("Buat Pesanan Studio")
+        self.tab_pesan = self.tab_view.add("Buat Pesanan")
         self.tab_bayar = self.tab_view.add("Bayar Pesanan & Denda")
         self.tab_riwayat = self.tab_view.add("Pesanan & Riwayat Saya")
 
@@ -321,6 +337,8 @@ class PenyewaGUI(ctk.CTk):
             self.muat_jadwal(None)
 
         self.muat_alat()
+        if hasattr(self, "opt_studio"):
+            self.muat_pilihan_pesan()
 
     def pilih_studio_katalog(self, event=None):
         sel = self.tabel_katalog.selection()
@@ -428,37 +446,320 @@ class PenyewaGUI(ctk.CTk):
                 db.close()
 
     def setup_tab_pesan(self):
-        ctk.CTkLabel(
-            self.tab_pesan,
-            text="Form Pemesanan Studio Seni",
-            font=("Segoe UI", 16, "bold"),
-        ).pack(pady=(20, 10))
+        self._studio_opsi = {}  # label dropdown -> baris studio
+        self._alat_opsi = {}    # label dropdown -> baris alat
+        self._keranjang = {}    # id_alat -> jumlah
 
-        self.ent_alat = ctk.CTkEntry(
-            self.tab_pesan,
-            placeholder_text="ID Studio atau Nama Studio",
-            width=350,
-            height=40,
+        self.tab_pesan.grid_columnconfigure(0, weight=1)
+        self.tab_pesan.grid_rowconfigure(0, weight=1)
+
+        sub = ctk.CTkTabview(self.tab_pesan, fg_color="#222222")
+        sub.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        self.sub_studio = sub.add("Sewa Studio")
+        self.sub_alat = sub.add("Sewa Alat")
+
+        self._setup_form_studio()
+        self._setup_form_alat()
+        self.muat_pilihan_pesan()
+
+    # ---------- FORM SEWA STUDIO (tanggal + jam) ----------
+    def _setup_form_studio(self):
+        f = self.sub_studio
+        ctk.CTkLabel(
+            f, text="Form Sewa Studio (per tanggal & jam)",
+            font=("Segoe UI", 16, "bold"),
+        ).pack(pady=(15, 8))
+
+        self.opt_studio = ctk.CTkOptionMenu(
+            f, values=["(memuat...)"], width=420, height=38,
+            command=lambda _=None: self.hitung_estimasi_studio(),
         )
-        self.ent_alat.pack(pady=10)
+        self.opt_studio.pack(pady=6)
+
+        self.opt_tgl_studio = ctk.CTkOptionMenu(
+            f, values=daftar_tanggal(), width=420, height=38,
+            command=lambda _=None: self.hitung_estimasi_studio(),
+        )
+        self.opt_tgl_studio.pack(pady=6)
+        ctk.CTkLabel(
+            f, text="Tanggal sewa (format YYYY-MM-DD)",
+            font=("Segoe UI", 10), text_color="#9aa0a6",
+        ).pack()
+
+        self.opt_jam = ctk.CTkOptionMenu(
+            f, values=[f"{j:02d}.00" for j in range(0, JAM_TUTUP)],
+            width=420, height=38,
+            command=lambda _=None: self.hitung_estimasi_studio(),
+        )
+        self.opt_jam.set("09.00")
+        self.opt_jam.pack(pady=(10, 2))
+        ctk.CTkLabel(
+            f, text="Jam mulai (studio tutup pukul 22.00)",
+            font=("Segoe UI", 10), text_color="#9aa0a6",
+        ).pack()
 
         self.ent_durasi = ctk.CTkEntry(
-            self.tab_pesan,
-            placeholder_text="Durasi Sewa (Jam)",
-            width=350,
-            height=40,
+            f, placeholder_text="Durasi sewa (jam)", width=420, height=38,
         )
         self.ent_durasi.pack(pady=10)
+        self.ent_durasi.bind("<KeyRelease>", lambda e: self.hitung_estimasi_studio())
+
+        self.lbl_estimasi_studio = ctk.CTkLabel(
+            f, text="Estimasi: -", font=("Segoe UI", 13, "bold"), text_color="#2ecc71",
+        )
+        self.lbl_estimasi_studio.pack(pady=4)
 
         ctk.CTkButton(
-            self.tab_pesan,
-            text="Kirim & Buat Pesanan",
-            fg_color="#3498db",
-            hover_color="#2980b9",
-            width=350,
-            height=42,
-            command=self.buat_pesanan,
-        ).pack(pady=15)
+            f, text="Kirim & Buat Pesanan Studio", fg_color="#3498db",
+            hover_color="#2980b9", width=420, height=42,
+            command=self.buat_pesanan_studio,
+        ).pack(pady=12)
+
+    def hitung_estimasi_studio(self):
+        studio = self._studio_opsi.get(self.opt_studio.get())
+        durasi = self.ent_durasi.get().strip()
+        if not studio or not durasi.isdigit() or int(durasi) <= 0:
+            self.lbl_estimasi_studio.configure(text="Estimasi: -")
+            return
+        mulai = int(self.opt_jam.get().split(".")[0])
+        selesai = mulai + int(durasi)
+        total = float(studio.get("harga_per_jam") or 0) * int(durasi)
+        self.lbl_estimasi_studio.configure(
+            text=(
+                f"{self.opt_tgl_studio.get()}  {mulai:02d}.00 - {selesai:02d}.00  "
+                f"({durasi} jam)  =  {format_rupiah(total)}"
+            )
+        )
+
+    def buat_pesanan_studio(self):
+        if not self.id_user:
+            messagebox.showerror(
+                "Error Akun", "ID pengguna tidak ditemukan. Silakan login kembali."
+            )
+            return
+        studio = self._studio_opsi.get(self.opt_studio.get())
+        if not studio:
+            messagebox.showwarning("Peringatan", "Pilih studio terlebih dahulu!")
+            return
+        durasi = self.ent_durasi.get().strip()
+        if not durasi.isdigit() or int(durasi) <= 0:
+            messagebox.showwarning(
+                "Peringatan", "Durasi sewa harus berupa angka positif (jam)!"
+            )
+            return
+
+        ok, pesan = TransaksiController.proses_pesan_studio(
+            self.id_user,
+            studio["id_studio"],
+            self.opt_tgl_studio.get(),
+            int(self.opt_jam.get().split(".")[0]),
+            int(durasi),
+        )
+        if ok:
+            self.ent_durasi.delete(0, "end")
+            self.hitung_estimasi_studio()
+            self._segarkan_semua()
+            messagebox.showinfo("Berhasil", pesan)
+        else:
+            messagebox.showerror("Pesanan Ditolak", pesan)
+
+    # ---------- FORM SEWA ALAT (keranjang + tanggal) ----------
+    def _setup_form_alat(self):
+        f = self.sub_alat
+        f.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            f, text="Form Sewa Alat (per hari)", font=("Segoe UI", 16, "bold"),
+        ).grid(row=0, column=0, pady=(15, 8))
+
+        baris_pilih = ctk.CTkFrame(f, fg_color="transparent")
+        baris_pilih.grid(row=1, column=0, pady=4)
+
+        self.opt_alat = ctk.CTkOptionMenu(
+            baris_pilih, values=["(memuat...)"], width=360, height=36,
+        )
+        self.opt_alat.pack(side="left", padx=4)
+        self.ent_qty = ctk.CTkEntry(
+            baris_pilih, placeholder_text="Jumlah", width=80, height=36,
+        )
+        self.ent_qty.pack(side="left", padx=4)
+        ctk.CTkButton(
+            baris_pilih, text="Tambah ke Keranjang", width=160, height=36,
+            fg_color="#27ae60", hover_color="#219653",
+            command=self.tambah_ke_keranjang,
+        ).pack(side="left", padx=4)
+
+        f_tabel = ctk.CTkFrame(f, fg_color="transparent")
+        f_tabel.grid(row=2, column=0, sticky="ew", padx=40, pady=6)
+        self.tabel_keranjang = ttk.Treeview(
+            f_tabel, columns=("id", "nama", "qty", "harga"),
+            show="headings", height=5,
+        )
+        for kol, judul, lebar, rata in (
+            ("id", "ID", 50, "center"),
+            ("nama", "Nama Alat", 300, "w"),
+            ("qty", "Jumlah", 80, "center"),
+            ("harga", "Harga / Hari", 130, "center"),
+        ):
+            self.tabel_keranjang.heading(kol, text=judul)
+            self.tabel_keranjang.column(kol, width=lebar, anchor=rata)
+        self.tabel_keranjang.pack(side="left", fill="x", expand=True)
+
+        ctk.CTkButton(
+            f, text="Hapus Item Terpilih", width=160, height=30,
+            fg_color="#e74c3c", hover_color="#c0392b",
+            command=self.hapus_dari_keranjang,
+        ).grid(row=3, column=0, pady=(0, 6))
+
+        baris_tgl = ctk.CTkFrame(f, fg_color="transparent")
+        baris_tgl.grid(row=4, column=0, pady=4)
+        ctk.CTkLabel(baris_tgl, text="Tanggal sewa:").pack(side="left", padx=(0, 4))
+        self.opt_tgl_sewa_alat = ctk.CTkOptionMenu(
+            baris_tgl, values=daftar_tanggal(), width=140,
+            command=lambda _=None: self.hitung_estimasi_alat(),
+        )
+        self.opt_tgl_sewa_alat.pack(side="left", padx=(0, 14))
+        ctk.CTkLabel(baris_tgl, text="Tanggal kembali:").pack(side="left", padx=(0, 4))
+        self.opt_tgl_kembali_alat = ctk.CTkOptionMenu(
+            baris_tgl, values=daftar_tanggal(), width=140,
+            command=lambda _=None: self.hitung_estimasi_alat(),
+        )
+        self.opt_tgl_kembali_alat.pack(side="left")
+
+        self.lbl_estimasi_alat = ctk.CTkLabel(
+            f, text="Estimasi: keranjang kosong",
+            font=("Segoe UI", 13, "bold"), text_color="#2ecc71",
+        )
+        self.lbl_estimasi_alat.grid(row=5, column=0, pady=4)
+
+        ctk.CTkButton(
+            f, text="Kirim & Buat Pesanan Alat", fg_color="#3498db",
+            hover_color="#2980b9", width=420, height=42,
+            command=self.buat_pesanan_alat,
+        ).grid(row=6, column=0, pady=10)
+
+    def muat_pilihan_pesan(self):
+        """Isi dropdown studio dan alat dari database."""
+        self._studio_opsi = {}
+        for s in StudioModel.lihatSemua():
+            label = (
+                f"{s['id_studio']} - {s['nama_studio']} "
+                f"({format_rupiah(s.get('harga_per_jam'))}/jam, "
+                f"{s.get('status_ketersediaan') or 'Tersedia'})"
+            )
+            self._studio_opsi[label] = s
+        nilai = list(self._studio_opsi) or ["(belum ada studio)"]
+        self.opt_studio.configure(values=nilai)
+        if self.opt_studio.get() not in self._studio_opsi:
+            self.opt_studio.set(nilai[0])
+
+        self._alat_opsi = {}
+        for a in AlatModel.lihatSemua():
+            label = (
+                f"{a['id_alat']} - {a['nama_alat']} "
+                f"({format_rupiah(a.get('harga_per_hari'))}/hari, stok {int(a.get('stok') or 0)})"
+            )
+            self._alat_opsi[label] = a
+        nilai = list(self._alat_opsi) or ["(belum ada alat)"]
+        self.opt_alat.configure(values=nilai)
+        if self.opt_alat.get() not in self._alat_opsi:
+            self.opt_alat.set(nilai[0])
+
+    def tambah_ke_keranjang(self):
+        alat = self._alat_opsi.get(self.opt_alat.get())
+        if not alat:
+            messagebox.showwarning("Peringatan", "Pilih alat terlebih dahulu!")
+            return
+        qty = self.ent_qty.get().strip()
+        if not qty.isdigit() or int(qty) <= 0:
+            messagebox.showwarning("Peringatan", "Jumlah harus angka lebih dari 0!")
+            return
+        total_qty = self._keranjang.get(alat["id_alat"], 0) + int(qty)
+        stok = int(alat.get("stok") or 0)
+        if total_qty > stok:
+            messagebox.showwarning(
+                "Stok Kurang",
+                f"Stok '{alat['nama_alat']}' hanya {stok} "
+                f"(di keranjang sudah {self._keranjang.get(alat['id_alat'], 0)}).",
+            )
+            return
+        self._keranjang[alat["id_alat"]] = total_qty
+        self.ent_qty.delete(0, "end")
+        self._gambar_keranjang()
+
+    def hapus_dari_keranjang(self):
+        sel = self.tabel_keranjang.selection()
+        if not sel:
+            messagebox.showwarning("Peringatan", "Pilih item keranjang terlebih dahulu!")
+            return
+        self._keranjang.pop(int(sel[0]), None)
+        self._gambar_keranjang()
+
+    def _gambar_keranjang(self):
+        for row in self.tabel_keranjang.get_children():
+            self.tabel_keranjang.delete(row)
+        data = {a["id_alat"]: a for a in self._alat_opsi.values()}
+        for id_alat, qty in self._keranjang.items():
+            a = data.get(id_alat, {})
+            self.tabel_keranjang.insert(
+                "", "end", iid=str(id_alat),
+                values=(id_alat, a.get("nama_alat", "?"), qty,
+                        format_rupiah(a.get("harga_per_hari"))),
+            )
+        self.hitung_estimasi_alat()
+
+    def hitung_estimasi_alat(self):
+        if not self._keranjang:
+            self.lbl_estimasi_alat.configure(text="Estimasi: keranjang kosong")
+            return
+        try:
+            d_sewa = date.fromisoformat(self.opt_tgl_sewa_alat.get())
+            d_kembali = date.fromisoformat(self.opt_tgl_kembali_alat.get())
+        except ValueError:
+            return
+        if d_kembali < d_sewa:
+            self.lbl_estimasi_alat.configure(
+                text="Tanggal kembali tidak boleh sebelum tanggal sewa", text_color="#e74c3c"
+            )
+            return
+        hari = (d_kembali - d_sewa).days or 1
+        data = {a["id_alat"]: a for a in self._alat_opsi.values()}
+        total = sum(
+            float(data.get(i, {}).get("harga_per_hari") or 0) * q * hari
+            for i, q in self._keranjang.items()
+        )
+        self.lbl_estimasi_alat.configure(
+            text=f"{hari} hari  =  {format_rupiah(total)}", text_color="#2ecc71"
+        )
+
+    def buat_pesanan_alat(self):
+        if not self.id_user:
+            messagebox.showerror(
+                "Error Akun", "ID pengguna tidak ditemukan. Silakan login kembali."
+            )
+            return
+        if not self._keranjang:
+            messagebox.showwarning("Peringatan", "Keranjang masih kosong!")
+            return
+        ok, pesan = TransaksiController.proses_pesan_alat(
+            self.id_user,
+            self.opt_tgl_sewa_alat.get(),
+            self.opt_tgl_kembali_alat.get(),
+            list(self._keranjang.items()),
+        )
+        if ok:
+            self._keranjang = {}
+            self._gambar_keranjang()
+            self._segarkan_semua()
+            messagebox.showinfo("Berhasil", pesan)
+        else:
+            messagebox.showerror("Pesanan Ditolak", pesan)
+
+    def _segarkan_semua(self):
+        """Muat ulang katalog (stok), pilihan dropdown, tagihan, dan riwayat."""
+        self.muat_katalog()
+        self.muat_tagihan()
+        self.muat_riwayat()
 
     def setup_tab_bayar(self):
         self.tab_bayar.grid_columnconfigure(0, weight=1)
@@ -479,7 +780,7 @@ class PenyewaGUI(ctk.CTk):
         self.tabel_tagihan.heading("jenis", text="Jenis Tagihan")
 
         self.tabel_tagihan.column("id_trx", width=50, anchor="center")
-        self.tabel_tagihan.column("label", width=150, anchor="w")
+        self.tabel_tagihan.column("label", width=260, anchor="w")
         self.tabel_tagihan.column("tgl", width=100, anchor="center")
         self.tabel_tagihan.column("nominal", width=100, anchor="center")
         self.tabel_tagihan.column("denda", width=100, anchor="center")
@@ -527,22 +828,26 @@ class PenyewaGUI(ctk.CTk):
         )
         container.pack(fill="both", expand=True, padx=10, pady=10)
 
-        kolom = ("id_trx", "tgl", "total", "denda", "status")
+        kolom = ("id_trx", "tgl", "isi", "total", "denda", "status", "bayar")
         self.tabel_riwayat = ttk.Treeview(
             container, columns=kolom, show="headings", height=13
         )
 
         self.tabel_riwayat.heading("id_trx", text="ID Trx")
         self.tabel_riwayat.heading("tgl", text="Tanggal Sewa")
+        self.tabel_riwayat.heading("isi", text="Isi Pesanan")
         self.tabel_riwayat.heading("total", text="Total Biaya")
         self.tabel_riwayat.heading("denda", text="Denda")
-        self.tabel_riwayat.heading("status", text="Status Pembayaran")
+        self.tabel_riwayat.heading("status", text="Status Transaksi")
+        self.tabel_riwayat.heading("bayar", text="Pembayaran")
 
         self.tabel_riwayat.column("id_trx", width=60, anchor="center")
-        self.tabel_riwayat.column("tgl", width=120, anchor="center")
-        self.tabel_riwayat.column("total", width=120, anchor="center")
-        self.tabel_riwayat.column("denda", width=110, anchor="center")
-        self.tabel_riwayat.column("status", width=140, anchor="center")
+        self.tabel_riwayat.column("tgl", width=100, anchor="center")
+        self.tabel_riwayat.column("isi", width=260, anchor="w")
+        self.tabel_riwayat.column("total", width=110, anchor="center")
+        self.tabel_riwayat.column("denda", width=90, anchor="center")
+        self.tabel_riwayat.column("status", width=110, anchor="center")
+        self.tabel_riwayat.column("bayar", width=110, anchor="center")
 
         scroll = ttk.Scrollbar(
             container,
@@ -568,113 +873,6 @@ class PenyewaGUI(ctk.CTk):
 
         self.muat_riwayat()
 
-    def buat_pesanan(self):
-        input_studio = self.ent_alat.get().strip()
-        durasi = self.ent_durasi.get().strip()
-
-        if not self.id_user:
-            messagebox.showerror(
-                "Error Akun",
-                "ID pengguna tidak ditemukan. Silakan login kembali.",
-            )
-            return
-
-        if not input_studio:
-            messagebox.showwarning(
-                "Peringatan", "ID Studio atau Nama Studio harus diisi!"
-            )
-            return
-
-        if not durasi.isdigit() or int(durasi) <= 0:
-            messagebox.showwarning(
-                "Peringatan",
-                "Durasi sewa harus berupa angka positif (jam)!",
-            )
-            return
-
-        db = None
-        cursor = None
-
-        try:
-            db = mysql.connector.connect(
-                host="localhost",
-                user="root",
-                password="",
-                database="artstudio_rent",
-            )
-            cursor = db.cursor(dictionary=True)
-
-            if input_studio.isdigit():
-                cursor.execute("SELECT harga_per_jam FROM studio WHERE id_studio = %s", (int(input_studio),))
-            else:
-                cursor.execute("SELECT harga_per_jam FROM studio WHERE nama_studio = %s", (input_studio,))
-            
-            hasil_studio = cursor.fetchone()
-
-            if not hasil_studio:
-                messagebox.showerror("Error", f"Studio dengan data '{input_studio}' tidak ditemukan di katalog!")
-                return
-
-            harga_per_jam = float(hasil_studio.get("harga_per_jam") or 0)
-            jumlah_jam = int(durasi)
-            hari_sewa = (jumlah_jam + 23) // 24
-            tanggal_kembali = date.today() + timedelta(days=hari_sewa)
-            total_biaya = jumlah_jam * harga_per_jam
-
-            query_trx = """
-                INSERT INTO transaksi
-                (
-                    id_user,
-                    tgl_sewa,
-                    tgl_kembali_rencana,
-                    total_biaya,
-                    status_transaksi
-                )
-                VALUES (%s, CURDATE(), %s, %s, 'Pending')
-            """
-            cursor.execute(
-                query_trx,
-                (self.id_user, tanggal_kembali, total_biaya),
-            )
-            id_transaksi = cursor.lastrowid
-
-            query_byr = """
-                INSERT INTO pembayaran
-                (
-                    id_transaksi,
-                    metode_bayar,
-                    jumlah_bayar,
-                    status_konfirmasi
-                )
-                VALUES (%s, 'Transfer', %s, 'Pending')
-            """
-            cursor.execute(query_byr, (id_transaksi, total_biaya))
-            
-            db.commit()
-
-            self.ent_alat.delete(0, "end")
-            self.ent_durasi.delete(0, "end")
-            self.muat_tagihan()
-            self.muat_riwayat()
-
-            messagebox.showinfo(
-                "Berhasil",
-                "Pesanan berhasil dibuat. Silakan buka tab 'Bayar Pesanan & Denda' untuk melakukan pembayaran.",
-            )
-
-        except mysql.connector.Error as err:
-            if db and db.is_connected():
-                db.rollback()
-            messagebox.showerror(
-                "Database Error", f"Gagal membuat pesanan:\n{err}"
-            )
-
-        finally:
-            if cursor:
-                cursor.close()
-            if db and db.is_connected():
-                db.close()
-
     def muat_tagihan(self):
         for row in self.tabel_tagihan.get_children():
             self.tabel_tagihan.delete(row)
@@ -682,96 +880,58 @@ class PenyewaGUI(ctk.CTk):
         if not self.id_user:
             return
 
-        db = None
-        cursor = None
-        try:
-            db = mysql.connector.connect(
-                host="localhost", user="root", password="", database="artstudio_rent"
-            )
-            cursor = db.cursor(dictionary=True)
-            cursor.execute(
-                """
-                SELECT id_transaksi, tgl_sewa, total_biaya, denda, status_transaksi
-                FROM transaksi
-                WHERE id_user = %s AND status_transaksi = 'Pending'
-                """,
-                (self.id_user,)
-            )
-            for t in cursor.fetchall():
-                denda_val = float(t.get('denda') or 0)
-                self.tabel_tagihan.insert("", "end", values=(
-                    t['id_transaksi'], "Sewa Studio", t['tgl_sewa'],
-                    f"Rp {float(t['total_biaya']):,.0f}", f"Rp {denda_val:,.0f}", "Sewa Normal"
-                ))
-        except mysql.connector.Error as err:
-            messagebox.showerror("Database Error", f"Gagal memuat tagihan:\n{err}")
-        finally:
-            if cursor: cursor.close()
-            if db and db.is_connected(): db.close()
+        # Sewa Pending (belum ada pembayaran) + denda keterlambatan (Selesai).
+        for t in TransaksiController.lihat_tagihan(self.id_user):
+            self.tabel_tagihan.insert("", "end", values=(
+                t["id_transaksi"], t.get("ringkasan", "-"), format_tanggal(t["tgl_sewa"]),
+                format_rupiah(t["total_biaya"]), format_rupiah(t.get("denda")),
+                "Sewa Normal",
+            ))
+        for t in TransaksiController.lihat_tagihan_denda(self.id_user):
+            self.tabel_tagihan.insert("", "end", values=(
+                t["id_transaksi"], t.get("ringkasan", "-"), format_tanggal(t["tgl_sewa"]),
+                format_rupiah(t["total_biaya"]), format_rupiah(t.get("denda")),
+                "Denda",
+            ))
 
-    def bayar_transfer(self):
+    def _bayar(self, metode):
+        """Catat pembayaran lewat controller (jumlah otomatis, anti-duplikat,
+        status transaksi tetap Pending sampai operator memverifikasi)."""
         sel = self.tabel_tagihan.selection()
         if not sel:
             messagebox.showwarning("Peringatan", "Pilih tagihan pada tabel terlebih dahulu!")
             return
-        item = self.tabel_tagihan.item(sel[0])
-        id_trx = item.get("values")[0]
+        id_trx = self.tabel_tagihan.item(sel[0]).get("values")[0]
 
-        file_path = filedialog.askopenfilename(
-            title="Pilih File Bukti Pembayaran",
-            filetypes=[("Image Files", "*.png *.jpg *.jpeg"), ("All Files", "*.*")]
-        )
-        if not file_path:
+        bukti = None
+        if metode == "Transfer":
+            bukti = filedialog.askopenfilename(
+                title="Pilih File Bukti Pembayaran",
+                filetypes=[("Image Files", "*.png *.jpg *.jpeg"), ("All Files", "*.*")],
+            )
+            if not bukti:
+                return
+        elif not messagebox.askyesno(
+            "Konfirmasi Tunai",
+            f"Konfirmasi pembayaran tunai (cash di lokasi) untuk Transaksi ID {id_trx}?",
+        ):
             return
 
-        db = None
-        cursor = None
-        try:
-            db = mysql.connector.connect(
-                host="localhost", user="root", password="", database="artstudio_rent"
-            )
-            cursor = db.cursor()
-            cursor.execute("UPDATE pembayaran SET bukti_bayar = %s, metode_bayar = 'Transfer', status_konfirmasi = 'Menunggu' WHERE id_transaksi = %s", (file_path, id_trx))
-            cursor.execute("UPDATE transaksi SET status_transaksi = 'Menunggu Konfirmasi' WHERE id_transaksi = %s", (id_trx,))
-            db.commit()
-            messagebox.showinfo("Berhasil", f"Bukti bayar untuk Transaksi ID {id_trx} berhasil diunggah!")
+        ok, pesan = TransaksiController.proses_upload_bayar(
+            self.id_user, id_trx, metode, bukti
+        )
+        if ok:
+            messagebox.showinfo("Berhasil", pesan)
             self.muat_tagihan()
             self.muat_riwayat()
-        except mysql.connector.Error as err:
-            if db and db.is_connected(): db.rollback()
-            messagebox.showerror("Database Error", f"Gagal mengunggah bukti bayar:\n{err}")
-        finally:
-            if cursor: cursor.close()
-            if db and db.is_connected(): db.close()
+        else:
+            messagebox.showerror("Pembayaran Ditolak", pesan)
+
+    def bayar_transfer(self):
+        self._bayar("Transfer")
 
     def bayar_tunai(self):
-        sel = self.tabel_tagihan.selection()
-        if not sel:
-            messagebox.showwarning("Peringatan", "Pilih tagihan pada tabel terlebih dahulu!")
-            return
-        item = self.tabel_tagihan.item(sel[0])
-        id_trx = item.get("values")[0]
-
-        if messagebox.askyesno("Konfirmasi Tunai", f"Konfirmasi pembayaran tunai untuk Transaksi ID {id_trx}?"):
-            db = None
-            cursor = None
-            try:
-                db = mysql.connector.connect(
-                    host="localhost", user="root", password="", database="artstudio_rent"
-                )
-                cursor = db.cursor()
-                cursor.execute("UPDATE pembayaran SET metode_bayar = 'Tunai', status_konfirmasi = 'Menunggu' WHERE id_transaksi = %s", (id_trx,))
-                cursor.execute("UPDATE transaksi SET status_transaksi = 'Menunggu Konfirmasi' WHERE id_transaksi = %s", (id_trx,))
-                db.commit()
-                messagebox.showinfo("Berhasil", f"Pembayaran tunai untuk Transaksi ID {id_trx} dicatat dan menunggu verifikasi operator!")
-                self.muat_tagihan()
-                self.muat_riwayat()
-            except mysql.connector.Error as err:
-                if db and db.is_connected(): db.rollback()
-                messagebox.showerror("Database Error", f"Gagal mencatat pembayaran:\n{err}")
-            finally:
-                if cursor: cursor.close()
-                if db and db.is_connected(): db.close()
+        self._bayar("Tunai")
 
     def muat_riwayat(self):
         for row in self.tabel_riwayat.get_children():
@@ -780,53 +940,16 @@ class PenyewaGUI(ctk.CTk):
         if not self.id_user:
             return
 
-        db = None
-        cursor = None
-
-        try:
-            db = mysql.connector.connect(
-                host="localhost",
-                user="root",
-                password="",
-                database="artstudio_rent",
-            )
-            cursor = db.cursor(dictionary=True)
-
-            cursor.execute(
-                """
-                SELECT id_transaksi, tgl_sewa,
-                       total_biaya, denda, status_transaksi
-                FROM transaksi
-                WHERE id_user = %s
-                ORDER BY id_transaksi DESC
-                """,
-                (self.id_user,),
-            )
-
-            for transaksi in cursor.fetchall():
-                self.tabel_riwayat.insert(
-                    "",
-                    "end",
-                    values=(
-                        transaksi["id_transaksi"],
-                        transaksi["tgl_sewa"],
-                        f"Rp {float(transaksi['total_biaya'] or 0):,.0f}",
-                        f"Rp {float(transaksi['denda'] or 0):,.0f}",
-                        transaksi["status_transaksi"],
-                    ),
-                )
-
-        except mysql.connector.Error as err:
-            messagebox.showerror(
-                "Database Error",
-                f"Gagal memuat riwayat:\n{err}",
-            )
-
-        finally:
-            if cursor:
-                cursor.close()
-            if db and db.is_connected():
-                db.close()
+        for t in TransaksiController.lihat_pesanan_saya(self.id_user):
+            self.tabel_riwayat.insert("", "end", values=(
+                t["id_transaksi"],
+                format_tanggal(t["tgl_sewa"]),
+                t.get("ringkasan", "-"),
+                format_rupiah(t.get("total_biaya")),
+                format_rupiah(t.get("denda")),
+                t.get("status_transaksi") or "-",
+                t.get("status_pembayaran") or "Belum bayar",
+            ))
 
     def aksi_logout(self):
         if messagebox.askyesno(

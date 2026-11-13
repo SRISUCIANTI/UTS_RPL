@@ -2,6 +2,7 @@ import os
 import subprocess
 import sys
 import hashlib
+import tkinter
 from tkinter import messagebox
 import mysql.connector
 import customtkinter as ctk
@@ -102,11 +103,23 @@ def _potong_tepi(gambar):
 
 class LoginGUI(ctk.CTk):
 
+    def tengahkan_jendela(self, lebar=450, tinggi=640):
+        """Taruh jendela di tengah layar (benar juga di layar HiDPI)."""
+        self.update_idletasks()
+        try:
+            skala = self._get_window_scaling()
+        except Exception:
+            skala = 1.0
+        w, h = int(lebar * skala), int(tinggi * skala)
+        x = (self.winfo_screenwidth() - w) // 2
+        y = (self.winfo_screenheight() - h) // 2
+        tkinter.Wm.wm_geometry(self, f"{w}x{h}+{x}+{max(0, y - 30)}")
+
     def __init__(self):
         super().__init__()
 
         self.title("ArtStudio-Rent — Autentikasi Pengguna")
-        self.geometry("450x640")
+        self.tengahkan_jendela(450, 640)
         self.configure(fg_color=WARNA_LATAR)
         self.resizable(True, True)
 

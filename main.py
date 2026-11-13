@@ -5,10 +5,19 @@ from views.cli.owner_cli import menu_owner
 import sys
 
 def jalankan_gui():
-    """Buka aplikasi GUI lewat halaman login."""
+    """Buka aplikasi GUI: intro dulu, lalu halaman login.
+    Lewati intro dengan: python main.py --no-intro"""
     from views.gui.login_gui import LoginGUI
 
     app = LoginGUI()
+    if "--no-intro" not in sys.argv[1:]:
+        try:
+            from views.gui.intro_gui import IntroGUI
+
+            IntroGUI(app)
+        except Exception:
+            # intro hanya pemanis: bila gagal, langsung tampilkan login
+            app.deiconify()
     app.mainloop()
 
 

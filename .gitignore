@@ -3,6 +3,12 @@ __pycache__/
 *.pyc
 env/
 
+# App release
+build/
+dist/
+*.spec
+
+
 # Data lokal (jangan push)
 laporan_owner_*.txt
 *.sql

@@ -13,6 +13,7 @@ if current_dir not in sys.path:
     sys.path.append(current_dir)
 
 from controllers.transaksi_controller import TransaksiController
+from controllers.bukti_controller import BuktiController
 from models.studio_model import StudioModel
 from models.alat_model import AlatModel
 
@@ -871,6 +872,14 @@ class PenyewaGUI(ctk.CTk):
             command=self.muat_riwayat,
         ).pack(side="right", padx=5)
 
+        ctk.CTkButton(
+            btn_frame,
+            text="Cetak Bukti Sewa",
+            fg_color="#27ae60",
+            hover_color="#219653",
+            command=self.cetak_bukti,
+        ).pack(side="left", padx=5)
+
         self.muat_riwayat()
 
     def muat_tagihan(self):
@@ -951,6 +960,49 @@ class PenyewaGUI(ctk.CTk):
                 t.get("status_pembayaran") or "Belum bayar",
             ))
 
+    def cetak_bukti(self):
+        """FR-07: pratinjau bukti sewa transaksi terpilih, lalu simpan ke TXT."""
+        sel = self.tabel_riwayat.selection()
+        if not sel:
+            messagebox.showwarning("Peringatan", "Pilih transaksi pada tabel riwayat terlebih dahulu!")
+            return
+        id_trx = self.tabel_riwayat.item(sel[0]).get("values")[0]
+
+        ok, hasil = BuktiController.susun_bukti(self.id_user, id_trx)
+        if not ok:
+            messagebox.showwarning("Bukti Sewa Tidak Tersedia", hasil)
+            return
+
+        jendela = ctk.CTkToplevel(self)
+        jendela.title(f"Bukti Sewa - Transaksi {id_trx}")
+        jendela.geometry("620x560")
+        jendela.transient(self)
+        kotak = ctk.CTkTextbox(jendela, font=("Courier New", 12), wrap="none")
+        kotak.pack(fill="both", expand=True, padx=12, pady=(12, 6))
+        kotak.insert("1.0", "\n".join(hasil))
+        kotak.configure(state="disabled")
+
+        def simpan():
+            path = filedialog.asksaveasfilename(
+                parent=jendela,
+                title="Simpan Bukti Sewa",
+                defaultextension=".txt",
+                initialfile=f"bukti_sewa_{id_trx}.txt",
+                filetypes=[("Teks", "*.txt"), ("Semua File", "*.*")],
+            )
+            if not path:
+                return
+            berhasil, pesan = BuktiController.simpan_txt(hasil, path)
+            if berhasil:
+                messagebox.showinfo("Berhasil", pesan, parent=jendela)
+            else:
+                messagebox.showerror("Gagal", pesan, parent=jendela)
+
+        baris_btn = ctk.CTkFrame(jendela, fg_color="transparent")
+        baris_btn.pack(fill="x", padx=12, pady=(0, 12))
+        ctk.CTkButton(baris_btn, text="Simpan ke TXT", fg_color="#27ae60", hover_color="#219653", command=simpan).pack(side="left")
+        ctk.CTkButton(baris_btn, text="Tutup", fg_color="#555555", command=jendela.destroy).pack(side="right")
+
     def aksi_logout(self):
         if messagebox.askyesno(
             "Konfirmasi",
@@ -970,9 +1022,22 @@ if __name__ == "__main__":
         }
         PenyewaGUI(user).mainloop()
     else:
-        user = {
-            "id_user": 3,
-            "nama_lengkap": "Sri Suci",
-            "role": "penyewa",
-        }
+        # User uji bawaan: penyewa "kila" (dicari lewat username agar ID-nya benar).
+        user = {"id_user": 3, "nama_lengkap": "Kila", "role": "penyewa"}
+        try:
+            _db = mysql.connector.connect(
+                host="localhost", user="root", password="", database="artstudio_rent"
+            )
+            _cur = _db.cursor(dictionary=True)
+            _cur.execute(
+                "SELECT id_user, nama_lengkap FROM users WHERE username = %s", ("kila",)
+            )
+            _row = _cur.fetchone()
+            if _row:
+                user["id_user"] = _row["id_user"]
+                user["nama_lengkap"] = _row["nama_lengkap"] or "Kila"
+            _cur.close()
+            _db.close()
+        except mysql.connector.Error:
+            pass  # DB tidak bisa dihubungi: pakai nilai bawaan di atas
         PenyewaGUI(user).mainloop()

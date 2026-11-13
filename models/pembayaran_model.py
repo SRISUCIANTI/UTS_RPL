@@ -60,6 +60,25 @@ class PembayaranModel:
             conn.close()
 
     @staticmethod
+    def lihatByTransaksi(id_transaksi):
+        """Semua pembayaran satu transaksi, urut lama -> baru (sewa dulu, lalu denda)."""
+        conn = get_connection()
+        if not conn:
+            return []
+        cursor = conn.cursor(dictionary=True)
+        try:
+            cursor.execute(
+                "SELECT * FROM pembayaran WHERE id_transaksi = %s ORDER BY id_pembayaran ASC",
+                (id_transaksi,)
+            )
+            return cursor.fetchall()
+        except Exception as e:
+            print(f"[ERROR] Lihat Pembayaran Transaksi: {e}")
+            return []
+        finally:
+            conn.close()
+
+    @staticmethod
     def tambahPembayaran(id_transaksi, metode, bukti_pembayaran, jumlah_bayar=0):
         """Metode pendukung untuk mengunggah info pembayaran"""
         conn = get_connection()

@@ -5,9 +5,19 @@ import customtkinter as ctk
 from tkinter import ttk, messagebox
 import mysql.connector
 import subprocess
+from datetime import date, datetime
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(current_dir)
+project_root = os.path.dirname(os.path.dirname(current_dir))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+if current_dir not in sys.path:
+    sys.path.append(current_dir)
+
+from controllers.transaksi_controller import TransaksiController
+from controllers.pengembalian_controller import PengembalianController
+from models.pengembalian_model import PengembalianModel
+from models.transaksi_model import TransaksiModel
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -158,7 +168,7 @@ class OperatorGUI(ctk.CTk):
 
         ctk.CTkButton(
             f_kiri,
-            text="Muat Antrean Pending",
+            text="Muat Antrean Pembayaran",
             fg_color="#3498db",
             height=40,
             command=self.muat_data_pending,
@@ -174,7 +184,7 @@ class OperatorGUI(ctk.CTk):
 
         ctk.CTkButton(
             f_kiri,
-            text="Setujui Pembayaran (Lunas)",
+            text="Setujui Pembayaran",
             fg_color="#2ecc71",
             height=40,
             command=self.aksi_setujui,
@@ -182,7 +192,7 @@ class OperatorGUI(ctk.CTk):
 
         ctk.CTkButton(
             f_kiri,
-            text="Tolak Bukti Transfer",
+            text="Tolak Pembayaran",
             fg_color="#e74c3c",
             height=40,
             command=self.aksi_tolak,
@@ -198,14 +208,14 @@ class OperatorGUI(ctk.CTk):
         self.tabel_verif = ttk.Treeview(table_frame, columns=kolom, show="headings", height=15)
         self.tabel_verif.heading("id_trx", text="ID Trx")
         self.tabel_verif.heading("penyewa", text="Penyewa")
-        self.tabel_verif.heading("total", text="Total Biaya")
-        self.tabel_verif.heading("status", text="Status")
+        self.tabel_verif.heading("total", text="Nominal Dibayar")
+        self.tabel_verif.heading("status", text="Jenis - Metode")
         self.tabel_verif.heading("bukti", text="File Bukti Bayar")
 
         self.tabel_verif.column("id_trx", width=50, anchor="center")
         self.tabel_verif.column("penyewa", width=120, anchor="w")
         self.tabel_verif.column("total", width=100, anchor="center")
-        self.tabel_verif.column("status", width=80, anchor="center")
+        self.tabel_verif.column("status", width=110, anchor="center")
         self.tabel_verif.column("bukti", width=150, anchor="w")
 
         scroll = ttk.Scrollbar(table_frame, orient="vertical", command=self.tabel_verif.yview)
@@ -215,59 +225,55 @@ class OperatorGUI(ctk.CTk):
         self.muat_data_pending()
 
     def muat_data_pending(self):
+        """Antrean verifikasi: semua pembayaran berstatus Menunggu,
+        baik sewa (transaksi Pending) maupun denda (transaksi Selesai)."""
         for r in self.tabel_verif.get_children():
             self.tabel_verif.delete(r)
-        db = None
-        cursor = None
         try:
-            db = mysql.connector.connect(host="localhost", user="root", password="", database="artstudio_rent")
-            cursor = db.cursor(dictionary=True)
-            cursor.execute(
-                """
-                SELECT t.id_transaksi, t.total_biaya, t.status_transaksi, u.username, u.nama_lengkap, p.bukti_bayar, p.id_pembayaran
-                FROM transaksi t
-                JOIN users u ON t.id_user = u.id_user
-                LEFT JOIN pembayaran p ON t.id_transaksi = p.id_transaksi
-                WHERE t.status_transaksi = 'Menunggu Konfirmasi' OR t.status_transaksi = 'Pending'
-                """
-            )
-            for t in cursor.fetchall():
-                path_bukti = t.get("bukti_bayar") or "-"
-                nama_file = os.path.basename(path_bukti) if path_bukti != "-" else "-"
+            for t in TransaksiController.lihat_pending():
+                if t.get("status_pembayaran") != "Menunggu":
+                    continue  # Pending tanpa pembayaran belum bisa diverifikasi
+                jenis = "Denda" if t.get("status_transaksi") == "Selesai" else "Sewa"
+                bukti = t.get("bukti_bayar")
                 self.tabel_verif.insert(
                     "",
                     "end",
+                    iid=str(t["id_pembayaran"]),  # iid = ID pembayaran
                     values=(
                         t.get("id_transaksi"),
                         f"{t.get('username', '-')} ({t.get('nama_lengkap', '-')})",
-                        f"Rp {float(t.get('total_biaya') or 0):,.0f}",
-                        t.get("status_transaksi"),
-                        nama_file,
+                        format_rupiah(t.get("jumlah_bayar")),
+                        f"{jenis} - {t.get('metode_bayar') or '-'}",
+                        os.path.basename(bukti) if bukti else "- (Tunai)",
                     ),
                 )
         except Exception as e:
             messagebox.showerror("Database Error", f"Gagal memuat antrean:\n{e}")
-        finally:
-            if cursor: cursor.close()
-            if db and db.is_connected(): db.close()
 
-    def lihat_bukti_bayar(self):
+    def _pembayaran_terpilih(self):
+        """(id_transaksi, id_pembayaran) baris terpilih, atau None."""
         sel = self.tabel_verif.selection()
         if not sel:
-            messagebox.showwarning("Peringatan", "Pilih data transaksi pada tabel terlebih dahulu!")
+            messagebox.showwarning("Peringatan", "Pilih pembayaran pada tabel terlebih dahulu!")
+            return None
+        id_trx = self.tabel_verif.item(sel[0]).get("values")[0]
+        return id_trx, int(sel[0])
+
+    def lihat_bukti_bayar(self):
+        pilihan = self._pembayaran_terpilih()
+        if not pilihan:
             return
-        item = self.tabel_verif.item(sel[0])
-        id_trx = item.get("values")[0]
+        _, id_bayar = pilihan
 
         db = None
         cursor = None
         try:
-            db = mysql.connector.connect(host="localhost", user="root", password="", database="artstudio_rent")
+            db = _koneksi()
             cursor = db.cursor(dictionary=True)
-            cursor.execute("SELECT bukti_bayar FROM pembayaran WHERE id_transaksi = %s", (id_trx,))
+            cursor.execute("SELECT bukti_bayar FROM pembayaran WHERE id_pembayaran = %s", (id_bayar,))
             res = cursor.fetchone()
             if not res or not res.get("bukti_bayar"):
-                messagebox.showinfo("Informasi", "Belum ada file bukti bayar yang diunggah.")
+                messagebox.showinfo("Informasi", "Tidak ada file bukti (pembayaran Tunai atau belum diunggah).")
                 return
             file_path = res.get("bukti_bayar")
             if not os.path.exists(file_path):
@@ -283,56 +289,29 @@ class OperatorGUI(ctk.CTk):
             if cursor: cursor.close()
             if db and db.is_connected(): db.close()
 
-    def aksi_setujui(self):
-        sel = self.tabel_verif.selection()
-        if not sel:
-            messagebox.showwarning("Peringatan", "Pilih transaksi!")
+    def _verifikasi(self, status):
+        """Setujui/tolak lewat controller: cek ulang slot studio, anti verifikasi
+        ulang, sewa -> Lunas/Batal, denda -> Tuntas/tetap Selesai."""
+        pilihan = self._pembayaran_terpilih()
+        if not pilihan:
             return
-        id_trx = self.tabel_verif.item(sel[0]).get("values")[0]
+        id_trx, id_bayar = pilihan
+        ok, pesan = TransaksiController.konfirmasi_pembayaran_transaksi(
+            id_trx, id_bayar, status
+        )
+        if ok:
+            messagebox.showinfo("Berhasil", pesan)
+        else:
+            messagebox.showerror("Verifikasi Gagal", pesan)
+        self.muat_data_pending()
+        self.muat_data_riwayat()
+        self.muat_data_pengembalian()
 
-        db = None
-        cursor = None
-        try:
-            db = mysql.connector.connect(host="localhost", user="root", password="", database="artstudio_rent")
-            cursor = db.cursor()
-            cursor.execute("UPDATE transaksi SET status_transaksi = 'Lunas' WHERE id_transaksi = %s", (id_trx,))
-            cursor.execute("UPDATE pembayaran SET status_konfirmasi = 'Diterima' WHERE id_transaksi = %s", (id_trx,))
-            db.commit()
-            messagebox.showinfo("Berhasil", f"Transaksi ID {id_trx} disetujui (Lunas).")
-            self.muat_data_pending()
-            self.muat_data_riwayat()
-            self.muat_data_pengembalian()
-        except Exception as e:
-            if db: db.rollback()
-            messagebox.showerror("Error", f"{e}")
-        finally:
-            if cursor: cursor.close()
-            if db and db.is_connected(): db.close()
+    def aksi_setujui(self):
+        self._verifikasi("Diterima")
 
     def aksi_tolak(self):
-        sel = self.tabel_verif.selection()
-        if not sel:
-            messagebox.showwarning("Peringatan", "Pilih transaksi!")
-            return
-        id_trx = self.tabel_verif.item(sel[0]).get("values")[0]
-
-        db = None
-        cursor = None
-        try:
-            db = mysql.connector.connect(host="localhost", user="root", password="", database="artstudio_rent")
-            cursor = db.cursor()
-            cursor.execute("UPDATE transaksi SET status_transaksi = 'Pending' WHERE id_transaksi = %s", (id_trx,))
-            cursor.execute("UPDATE pembayaran SET status_konfirmasi = 'Ditolak' WHERE id_transaksi = %s", (id_trx,))
-            db.commit()
-            messagebox.showinfo("Informasi", f"Bukti transfer untuk Transaksi ID {id_trx} ditolak.")
-            self.muat_data_pending()
-            self.muat_data_riwayat()
-        except Exception as e:
-            if db: db.rollback()
-            messagebox.showerror("Error", f"{e}")
-        finally:
-            if cursor: cursor.close()
-            if db and db.is_connected(): db.close()
+        self._verifikasi("Ditolak")
 
     # ================= TAB 2: MANAJEMEN INVENTARIS STUDIO =================
     def setup_tab_inventaris(self):
@@ -742,92 +721,169 @@ class OperatorGUI(ctk.CTk):
 
     # ================= TAB 3: PENGEMBALIAN & DENDA =================
     def setup_tab_pengembalian(self):
+        self._data_kembali = {}  # iid (id_transaksi) -> baris data
+
         self.tab_pengembalian.grid_columnconfigure(0, weight=1)
         self.tab_pengembalian.grid_rowconfigure(0, weight=1)
 
         f_utama = ctk.CTkFrame(self.tab_pengembalian, fg_color="transparent")
         f_utama.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
-        ctk.CTkLabel(f_utama, text="Batas Waktu, Validasi & Denda Keterlambatan", font=("Segoe UI", 16, "bold")).pack(anchor="w", pady=(5, 10))
+        ctk.CTkLabel(f_utama, text="Batas Waktu, Validasi & Denda Keterlambatan", font=("Segoe UI", 16, "bold")).pack(anchor="w", pady=(5, 2))
+        ctk.CTkLabel(
+            f_utama,
+            text="Denda Rp20.000 per hari keterlambatan (tanggal kembali aktual - rencana kembali). Stok alat otomatis pulih.",
+            font=("Segoe UI", 11), text_color="#9aa0a6",
+        ).pack(anchor="w", pady=(0, 8))
 
         table_frame = ctk.CTkFrame(f_utama, fg_color="transparent")
         table_frame.pack(fill="both", expand=True, pady=5)
 
-        kolom_k = ("id_trx", "penyewa", "tgl_sewa", "jatuh_tempo", "status_terlambat")
-        self.tabel_kembali = ttk.Treeview(table_frame, columns=kolom_k, show="headings", height=13)
-        self.tabel_kembali.heading("id_trx", text="ID Trx")
-        self.tabel_kembali.heading("penyewa", text="Penyewa")
-        self.tabel_kembali.heading("tgl_sewa", text="Tanggal Sewa")
-        self.tabel_kembali.heading("jatuh_tempo", text="Rencana Kembali")
-        self.tabel_kembali.heading("status_terlambat", text="Keterangan")
-
-        self.tabel_kembali.column("id_trx", width=60, anchor="center")
-        self.tabel_kembali.column("penyewa", width=180, anchor="w")
-        self.tabel_kembali.column("tgl_sewa", width=120, anchor="center")
-        self.tabel_kembali.column("jatuh_tempo", width=120, anchor="center")
-        self.tabel_kembali.column("status_terlambat", width=200, anchor="center")
+        kolom_k = ("id_trx", "penyewa", "isi", "tgl_sewa", "jatuh_tempo", "status_terlambat", "est_denda")
+        self.tabel_kembali = ttk.Treeview(table_frame, columns=kolom_k, show="headings", height=11)
+        for k, judul, lebar, rata in (
+            ("id_trx", "ID Trx", 55, "center"),
+            ("penyewa", "Penyewa", 170, "w"),
+            ("isi", "Isi Pesanan", 230, "w"),
+            ("tgl_sewa", "Tanggal Sewa", 95, "center"),
+            ("jatuh_tempo", "Rencana Kembali", 110, "center"),
+            ("status_terlambat", "Keterangan", 140, "center"),
+            ("est_denda", "Denda Saat Ini", 110, "center"),
+        ):
+            self.tabel_kembali.heading(k, text=judul)
+            self.tabel_kembali.column(k, width=lebar, anchor=rata)
+        self.tabel_kembali.tag_configure("telat", foreground="#ff8a65")
+        self.tabel_kembali.bind("<<TreeviewSelect>>", lambda e: self.hitung_estimasi_kembali())
 
         scroll = ttk.Scrollbar(table_frame, orient="vertical", command=self.tabel_kembali.yview)
         self.tabel_kembali.configure(yscrollcommand=scroll.set)
         self.tabel_kembali.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
 
-        ctk.CTkButton(f_utama, text="Proses Pengembalian & Kalkulasi Denda", fg_color="#3498db", height=40, command=self.aksi_validasi).pack(fill="x", pady=10)
+        f_form = ctk.CTkFrame(f_utama, fg_color="#222222", corner_radius=10)
+        f_form.pack(fill="x", pady=8)
+        ctk.CTkLabel(f_form, text="Tanggal kembali aktual (YYYY-MM-DD):").pack(side="left", padx=(12, 6), pady=10)
+        self.ent_tgl_aktual = ctk.CTkEntry(f_form, width=140)
+        self.ent_tgl_aktual.insert(0, date.today().isoformat())
+        self.ent_tgl_aktual.pack(side="left", padx=4)
+        self.ent_tgl_aktual.bind("<KeyRelease>", lambda e: self.hitung_estimasi_kembali())
+        ctk.CTkButton(
+            f_form, text="Hari Ini", width=80, fg_color="#555555",
+            command=self._isi_hari_ini,
+        ).pack(side="left", padx=6)
+        self.lbl_estimasi_kembali = ctk.CTkLabel(
+            f_form, text="Pilih transaksi pada tabel.",
+            font=("Segoe UI", 12, "bold"), text_color="#9aa0a6",
+        )
+        self.lbl_estimasi_kembali.pack(side="left", padx=14)
+
+        btn = ctk.CTkFrame(f_utama, fg_color="transparent")
+        btn.pack(fill="x")
+        ctk.CTkButton(btn, text="Proses Pengembalian & Kalkulasi Denda", fg_color="#3498db", height=40, command=self.aksi_validasi).pack(side="left", fill="x", expand=True, padx=(0, 6))
+        ctk.CTkButton(btn, text="Muat Ulang", fg_color="#555555", height=40, width=120, command=self.muat_data_pengembalian).pack(side="right")
         self.muat_data_pengembalian()
+
+    def _isi_hari_ini(self):
+        self.ent_tgl_aktual.delete(0, "end")
+        self.ent_tgl_aktual.insert(0, date.today().isoformat())
+        self.hitung_estimasi_kembali()
+
+    @staticmethod
+    def _ke_date(nilai):
+        return nilai.date() if isinstance(nilai, datetime) else nilai
 
     def muat_data_pengembalian(self):
         for r in self.tabel_kembali.get_children():
             self.tabel_kembali.delete(r)
-        db = None
-        cursor = None
+        self._data_kembali = {}
         try:
-            db = mysql.connector.connect(host="localhost", user="root", password="", database="artstudio_rent")
-            cursor = db.cursor(dictionary=True)
-            cursor.execute(
-                """
-                SELECT t.id_transaksi, t.tgl_sewa, t.tgl_kembali_rencana, u.username, u.nama_lengkap
-                FROM transaksi t
-                JOIN users u ON t.id_user = u.id_user
-                WHERE t.status_transaksi = 'Lunas'
-                """
-            )
-            for t in cursor.fetchall():
+            hari_ini = date.today()
+            for t in PengembalianController.lihat_belum_kembali():
+                rencana = self._ke_date(t.get("tgl_kembali_rencana"))
+                telat = t.get("estimasi_terlambat_hari", 0)
+                if telat > 0:
+                    ket, tag = f"TERLAMBAT {telat} hari", ("telat",)
+                else:
+                    sisa = (rencana - hari_ini).days if rencana else 0
+                    ket = "Jatuh tempo hari ini" if sisa == 0 else f"Sisa {sisa} hari"
+                    tag = ()
+                isi = []
+                for d in TransaksiModel.lihatDetail(t["id_transaksi"]):
+                    isi.append(d["nama_studio"] if d.get("id_studio") else f"{d['nama_alat']} x{d['jumlah']}")
+                iid = str(t["id_transaksi"])
+                self._data_kembali[iid] = t
                 self.tabel_kembali.insert(
-                    "",
-                    "end",
+                    "", "end", iid=iid, tags=tag,
                     values=(
-                        t.get("id_transaksi"),
+                        t["id_transaksi"],
                         f"{t.get('username', '-')} ({t.get('nama_lengkap', '-')})",
+                        ", ".join(isi) or "-",
                         t.get("tgl_sewa", "-"),
-                        t.get("tgl_kembali_rencana", "-"),
-                        "Aktif / Berjalan",
+                        rencana or "-",
+                        ket,
+                        format_rupiah(t.get("estimasi_denda")),
                     ),
                 )
         except Exception as e:
             messagebox.showerror("Error", f"{e}")
-        finally:
-            if cursor: cursor.close()
-            if db and db.is_connected(): db.close()
+        self.hitung_estimasi_kembali()
+
+    def _hitung_denda_pilihan(self):
+        """(teks, denda) untuk baris terpilih + tanggal aktual di form,
+        atau (pesan_error, None)."""
+        sel = self.tabel_kembali.selection()
+        if not sel:
+            return "Pilih transaksi pada tabel.", None
+        t = self._data_kembali.get(sel[0])
+        if not t:
+            return "Data transaksi tidak ditemukan.", None
+        try:
+            aktual = datetime.strptime(self.ent_tgl_aktual.get().strip(), "%Y-%m-%d").date()
+        except ValueError:
+            return "Format tanggal salah (YYYY-MM-DD).", None
+        sewa = self._ke_date(t.get("tgl_sewa"))
+        rencana = self._ke_date(t.get("tgl_kembali_rencana"))
+        if sewa and aktual < sewa:
+            return "Tanggal kembali sebelum tanggal sewa.", None
+        telat = (aktual - rencana).days if rencana else 0
+        denda = PengembalianModel.hitungDenda(telat)
+        if telat > 0:
+            return f"Terlambat {telat} hari  =  denda {format_rupiah(denda)}", denda
+        return "Tepat waktu  =  tanpa denda", denda
+
+    def hitung_estimasi_kembali(self):
+        teks, denda = self._hitung_denda_pilihan()
+        if denda is None:
+            warna = "#9aa0a6" if teks.startswith("Pilih") else "#e74c3c"
+        else:
+            warna = "#ff8a65" if denda > 0 else "#2ecc71"
+        self.lbl_estimasi_kembali.configure(text=teks, text_color=warna)
 
     def aksi_validasi(self):
         sel = self.tabel_kembali.selection()
         if not sel:
             messagebox.showwarning("Peringatan", "Pilih transaksi pada tabel!")
             return
-        id_trx = self.tabel_kembali.item(sel[0]).get("values")[0]
-        try:
-            db = mysql.connector.connect(host="localhost", user="root", password="", database="artstudio_rent")
-            cursor = db.cursor()
-            cursor.execute("UPDATE transaksi SET status_transaksi = 'Selesai' WHERE id_transaksi = %s", (id_trx,))
-            db.commit()
-            messagebox.showinfo("Berhasil", f"Pengembalian Transaksi ID {id_trx} divalidasi.")
-            self.muat_data_pengembalian()
-            self.muat_data_riwayat()
-        except Exception as e:
-            if db: db.rollback()
-            messagebox.showerror("Error", f"{e}")
-        finally:
-            if cursor: cursor.close()
-            if db and db.is_connected(): db.close()
+        teks, denda = self._hitung_denda_pilihan()
+        if denda is None:
+            messagebox.showwarning("Peringatan", teks)
+            return
+        id_trx = int(sel[0])
+        if not messagebox.askyesno(
+            "Konfirmasi Pengembalian",
+            f"Proses pengembalian Transaksi ID {id_trx}?\n\n{teks}",
+        ):
+            return
+        ok, pesan = PengembalianController.proses_kembali(
+            id_trx, self.ent_tgl_aktual.get().strip()
+        )
+        if ok:
+            messagebox.showinfo("Berhasil", pesan)
+        else:
+            messagebox.showerror("Gagal", pesan)
+        self.muat_data_pengembalian()
+        self.muat_data_riwayat()
+        self.muat_data_pending()
+        self.muat_data_alat()  # stok alat dipulihkan
 
     # ================= TAB 4: RIWAYAT TRANSAKSI =================
     def setup_tab_riwayat(self):
@@ -841,11 +897,12 @@ class OperatorGUI(ctk.CTk):
         table_frame.grid_rowconfigure(0, weight=1)
         table_frame.grid_columnconfigure(0, weight=1)
 
-        kolom = ("id_trx", "penyewa", "total", "denda", "status", "tgl_sewa")
+        kolom = ("id_trx", "penyewa", "total", "denda", "status", "tgl_sewa", "tgl_kembali")
         self.tabel_riwayat = ttk.Treeview(table_frame, columns=kolom, show="headings", height=15)
         judul = {
             "id_trx": "ID Trx", "penyewa": "Penyewa", "total": "Total Biaya",
-            "denda": "Denda", "status": "Status", "tgl_sewa": "Tanggal Sewa"
+            "denda": "Denda", "status": "Status", "tgl_sewa": "Tanggal Sewa",
+            "tgl_kembali": "Tgl Kembali Aktual"
         }
         for k, v in judul.items():
             self.tabel_riwayat.heading(k, text=v)
@@ -856,6 +913,7 @@ class OperatorGUI(ctk.CTk):
         self.tabel_riwayat.column("denda", width=110, anchor="center")
         self.tabel_riwayat.column("status", width=110, anchor="center")
         self.tabel_riwayat.column("tgl_sewa", width=110, anchor="center")
+        self.tabel_riwayat.column("tgl_kembali", width=130, anchor="center")
 
         scroll = ttk.Scrollbar(table_frame, orient="vertical", command=self.tabel_riwayat.yview)
         self.tabel_riwayat.configure(yscrollcommand=scroll.set)
@@ -878,7 +936,7 @@ class OperatorGUI(ctk.CTk):
             cursor = db.cursor(dictionary=True)
             cursor.execute(
                 """
-                SELECT t.id_transaksi, t.total_biaya, t.denda, t.status_transaksi, t.tgl_sewa, u.username, u.nama_lengkap
+                SELECT t.id_transaksi, t.total_biaya, t.denda, t.status_transaksi, t.tgl_sewa, t.tgl_kembali_aktual, u.username, u.nama_lengkap
                 FROM transaksi t
                 JOIN users u ON t.id_user = u.id_user
                 ORDER BY t.id_transaksi DESC
@@ -895,6 +953,7 @@ class OperatorGUI(ctk.CTk):
                         f"Rp {float(t.get('denda') or 0):,.0f}",
                         t.get("status_transaksi", "-"),
                         t.get("tgl_sewa", "-"),
+                        t.get("tgl_kembali_aktual") or "-",
                     ),
                 )
         except Exception as e:

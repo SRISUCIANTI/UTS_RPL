@@ -1,0 +1,41 @@
+name: Python CI Pipeline - ArtStudio-Rent
+
+# Pipeline berjalan otomatis saat ada push atau pull request ke branch main
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    # Dijalankan di dua versi Python agar kompatibilitas terlihat
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+
+    steps:
+      - name: 1. Mengambil Kode dari Repositori (Checkout)
+        uses: actions/checkout@v4
+
+      - name: 2. Menyiapkan Lingkungan Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: 3. Menginstal Dependensi Proyek
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install flake8 pytest
+
+      - name: 4. Menjalankan Linter Flake8 (cek error sintaks & nama tidak terdefinisi)
+        run: |
+          flake8 models/ controllers/ views/ config/ main.py --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: 5. Menjalankan Automated Unit Testing (Pytest)
+        run: |
+          python -m pytest -v

@@ -54,15 +54,15 @@ except ModuleNotFoundError:
     _tiruan_mysql()
 
 try:
+    # Pakai pustaka GUI asli bila bisa dimuat (komputer dengan tkinter).
     import tkinter  # noqa: F401
-except ModuleNotFoundError:
-    for _nama in ("tkinter", "tkinter.ttk", "tkinter.messagebox", "tkinter.filedialog"):
-        _tiruan_modul_gui(_nama)
-
-try:
     import customtkinter  # noqa: F401
-except ModuleNotFoundError:
-    _tiruan_modul_gui("customtkinter")
+except Exception:
+    # Tidak ada tkinter / customtkinter rusak (mis. server CI tanpa layar):
+    # keduanya diganti tiruan. Yang diuji hanya fungsi murni, bukan jendela.
+    for _nama in ("tkinter", "tkinter.ttk", "tkinter.messagebox",
+                  "tkinter.filedialog", "customtkinter"):
+        _tiruan_modul_gui(_nama)
 
 
 @pytest.fixture

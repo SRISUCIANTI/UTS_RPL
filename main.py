@@ -2,8 +2,23 @@ from views.cli.auth_cli import menu_auth
 from views.cli.penyewa_cli import menu_penyewa
 from views.cli.operator_cli import menu_operator
 from views.cli.owner_cli import menu_owner
+import sys
 
-def main():
+def jalankan_gui():
+    """Buka aplikasi GUI lewat halaman login."""
+    from views.gui.login_gui import LoginGUI
+
+    app = LoginGUI()
+    app.mainloop()
+
+
+def jalankan_cli():
+    """Mode teks (CLI) lama. Jalankan dengan: python main.py --cli"""
+    from views.cli.auth_cli import menu_auth
+    from views.cli.penyewa_cli import menu_penyewa
+    from views.cli.operator_cli import menu_operator
+    from views.cli.owner_cli import menu_owner
+
     try:
         while True:
             # Pintu Masuk Otentikasi Login/Register
@@ -22,6 +37,14 @@ def main():
                 menu_owner(user)
     except (KeyboardInterrupt, EOFError):
         print("\n\nKeluar dari sistem ArtStudio-Rent. Sampai jumpa!")
+
+
+def main():
+    if "--cli" in sys.argv[1:]:
+        jalankan_cli()
+    else:
+        jalankan_gui()
+
 
 if __name__ == "__main__":
     main()

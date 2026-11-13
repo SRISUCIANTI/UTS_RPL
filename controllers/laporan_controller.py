@@ -31,14 +31,27 @@ class LaporanController:
         ]
 
     @staticmethod
-    def riwayat_transaksi(status=None):
-        """Teks laporan riwayat. status None/'Semua' = semua status."""
+    def riwayat_transaksi(status=None, bulan=None):
+        """Teks laporan riwayat. status None/'Semua' = semua status;
+        bulan 'YYYY-MM' (opsional) menyaring berdasarkan tgl_sewa."""
         if status and str(status).strip().capitalize() not in STATUS_VALID:
             return None
+        if bulan:
+            bulan = str(bulan).strip()
+            try:
+                datetime.strptime(bulan, "%Y-%m")
+            except ValueError:
+                return None
         data = LaporanModel.riwayat(
             str(status).strip().capitalize() if status else None
         )
-        judul = f"RIWAYAT TRANSAKSI{(f' - {str(status).strip().capitalize()}') if status else ''}"
+        if bulan:
+            data = [t for t in data if LaporanController._tgl(t['tgl_sewa'])[:7] == bulan]
+        judul = (
+            "RIWAYAT TRANSAKSI"
+            f"{(f' - {str(status).strip().capitalize()}') if status else ''}"
+            f"{(f' - {bulan}') if bulan else ''}"
+        )
         baris = [judul, f"Jumlah: {len(data)} transaksi"]
         for t in data:
             baris.append(
@@ -87,11 +100,13 @@ class LaporanController:
         return baris
 
     @staticmethod
-    def simpan_txt(nama_jenis, baris):
-        """Simpan baris laporan ke file TXT. Mengembalikan nama file / None."""
+    def simpan_txt(nama_jenis, baris, path=None):
+        """Simpan baris laporan ke file TXT. `path` (opsional) = lokasi pilihan
+        pengguna (GUI); tanpa path, nama otomatis di folder kerja (CLI).
+        Mengembalikan nama file / None."""
         try:
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            nama_file = f"laporan_owner_{nama_jenis}_{stamp}.txt"
+            nama_file = path or f"laporan_owner_{nama_jenis}_{stamp}.txt"
             with open(nama_file, "w", encoding="utf-8") as f:
                 f.write(f"ArtStudio-Rent | dicetak {datetime.now():%Y-%m-%d %H:%M}\n")
                 f.write("=" * 60 + "\n")

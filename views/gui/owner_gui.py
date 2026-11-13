@@ -1,14 +1,42 @@
 import os
 import sys
+from datetime import datetime
 import customtkinter as ctk
-from tkinter import messagebox, ttk
-import mysql.connector
+from tkinter import messagebox, ttk, filedialog
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(current_dir)
+project_root = os.path.dirname(os.path.dirname(current_dir))
+if project_root not in sys.path:
+  sys.path.insert(0, project_root)
+if current_dir not in sys.path:
+  sys.path.append(current_dir)
+
+from controllers.laporan_controller import LaporanController
+from models.laporan_model import LaporanModel
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
+
+STATUS_FILTER = ["Semua", "Pending", "Lunas", "Selesai", "Batal", "Tuntas"]
+JENIS_REKAP = "Rekapitulasi Umum"
+JENIS_RIWAYAT = "Riwayat Transaksi (sesuai filter)"
+JENIS_BULANAN = "Pendapatan Bulanan (sesuai filter bulan)"
+JENIS_SEMUA = "Semua Laporan"
+
+
+def format_rupiah(nilai):
+  """Rp 25.000 (tanpa desimal bila bulat) / Rp 25.000,50."""
+  nilai = float(nilai or 0)
+  if nilai == int(nilai):
+    teks = f"{int(nilai):,}".replace(",", ".")
+  else:
+    teks = f"{nilai:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+  return f"Rp {teks}"
+
+
+def _bulan_dari(tgl):
+  """date / 'YYYY-MM-DD' -> 'YYYY-MM'."""
+  return tgl.strftime("%Y-%m") if hasattr(tgl, "strftime") else str(tgl or "")[:7]
 
 
 class OwnerGUI(ctk.CTk):
@@ -95,7 +123,7 @@ class OwnerGUI(ctk.CTk):
   # ==================================================
   def setup_tab_laporan(self):
     self.tab_laporan.grid_columnconfigure(0, weight=1)
-    self.tab_laporan.grid_rowconfigure(1, weight=1)
+    self.tab_laporan.grid_rowconfigure(2, weight=1)
 
     top_f = ctk.CTkFrame(self.tab_laporan, fg_color="#222222", corner_radius=10)
     top_f.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
@@ -106,34 +134,59 @@ class OwnerGUI(ctk.CTk):
 
     self.lbl_total = ctk.CTkLabel(
         top_f,
-        text="Total Pendapatan (Lunas): Rp 0",
+        text="Total Pendapatan: Rp 0",
         font=("Segoe UI", 15, "bold"),
         text_color="#2ecc71",
     )
     self.lbl_total.pack(side="right", padx=20, pady=15)
 
-    table_frame = ctk.CTkFrame(self.tab_laporan, fg_color="transparent")
-    table_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+    # ---- baris filter ----
+    filter_f = ctk.CTkFrame(self.tab_laporan, fg_color="transparent")
+    filter_f.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 4))
 
-    kolom = ("id_trx", "tanggal", "id_user", "penyewa", "total", "status")
+    ctk.CTkLabel(filter_f, text="Status:").pack(side="left", padx=(5, 4))
+    self.opt_status = ctk.CTkOptionMenu(
+        filter_f, values=STATUS_FILTER, width=120
+    )
+    self.opt_status.set("Semua")
+    self.opt_status.pack(side="left", padx=(0, 14))
+
+    ctk.CTkLabel(filter_f, text="Bulan (YYYY-MM):").pack(side="left", padx=(0, 4))
+    self.ent_bulan = ctk.CTkEntry(
+        filter_f, width=110, placeholder_text="kosong = semua"
+    )
+    self.ent_bulan.pack(side="left", padx=(0, 14))
+
+    ctk.CTkButton(
+        filter_f, text="Terapkan Filter", width=130,
+        command=self.muat_data_owner,
+    ).pack(side="left", padx=(0, 6))
+    ctk.CTkButton(
+        filter_f, text="Reset", width=80, fg_color="#555555",
+        command=self.reset_filter,
+    ).pack(side="left")
+
+    # ---- tabel ----
+    table_frame = ctk.CTkFrame(self.tab_laporan, fg_color="transparent")
+    table_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=5)
+
+    kolom = ("id_trx", "tanggal", "penyewa", "total", "denda", "status", "kembali")
 
     self.tabel_laporan = ttk.Treeview(
-        table_frame, columns=kolom, show="headings", height=13
+        table_frame, columns=kolom, show="headings", height=12
     )
 
-    self.tabel_laporan.heading("id_trx", text="ID Transaksi")
-    self.tabel_laporan.heading("tanggal", text="Tanggal Sewa")
-    self.tabel_laporan.heading("id_user", text="ID Penyewa")
-    self.tabel_laporan.heading("penyewa", text="Nama Penyewa")
-    self.tabel_laporan.heading("total", text="Total Biaya")
-    self.tabel_laporan.heading("status", text="Status Transaksi")
-
-    self.tabel_laporan.column("id_trx", width=90, anchor="center")
-    self.tabel_laporan.column("tanggal", width=130, anchor="center")
-    self.tabel_laporan.column("id_user", width=90, anchor="center")
-    self.tabel_laporan.column("penyewa", width=170, anchor="w")
-    self.tabel_laporan.column("total", width=140, anchor="center")
-    self.tabel_laporan.column("status", width=120, anchor="center")
+    for k, judul, lebar, rata in (
+        ("id_trx", "ID Transaksi", 90, "center"),
+        ("tanggal", "Tanggal Sewa", 110, "center"),
+        ("penyewa", "Nama Penyewa", 200, "w"),
+        ("total", "Total Biaya", 120, "center"),
+        ("denda", "Denda", 100, "center"),
+        ("status", "Status Transaksi", 120, "center"),
+        ("kembali", "Kembali Aktual", 120, "center"),
+    ):
+      self.tabel_laporan.heading(k, text=judul)
+      self.tabel_laporan.column(k, width=lebar, anchor=rata)
 
     scroll = ttk.Scrollbar(
         table_frame, orient="vertical", command=self.tabel_laporan.yview
@@ -143,12 +196,26 @@ class OwnerGUI(ctk.CTk):
     self.tabel_laporan.pack(side="left", fill="both", expand=True)
     scroll.pack(side="right", fill="y")
 
+    self.lbl_info_laporan = ctk.CTkLabel(
+        self.tab_laporan, text="", font=("Segoe UI", 11), text_color="#9aa0a6"
+    )
+    self.lbl_info_laporan.grid(row=3, column=0, sticky="w", padx=15)
+
+    # ---- baris export ----
     btn_f = ctk.CTkFrame(self.tab_laporan, fg_color="transparent")
-    btn_f.grid(row=2, column=0, sticky="ew", padx=10, pady=10)
+    btn_f.grid(row=4, column=0, sticky="ew", padx=10, pady=10)
+
+    self.opt_jenis = ctk.CTkOptionMenu(
+        btn_f,
+        values=[JENIS_REKAP, JENIS_RIWAYAT, JENIS_BULANAN, JENIS_SEMUA],
+        width=330, height=42,
+    )
+    self.opt_jenis.set(JENIS_SEMUA)
+    self.opt_jenis.pack(side="left", padx=(0, 10))
 
     ctk.CTkButton(
         btn_f,
-        text="Cetak / Export Laporan Bulanan",
+        text="Cetak / Export Laporan ke TXT",
         fg_color="#2980b9",
         height=42,
         command=self.aksi_export,
@@ -209,77 +276,77 @@ class OwnerGUI(ctk.CTk):
   # ==================================================
   # MEMUAT LAPORAN DARI DATABASE
   # ==================================================
+  def reset_filter(self):
+    self.opt_status.set("Semua")
+    self.ent_bulan.delete(0, "end")
+    self.muat_data_owner()
+
+  def _filter_laporan(self):
+    """(status|None, bulan|None) dari form; None bila bulan tidak valid."""
+    status = self.opt_status.get()
+    status = None if status == "Semua" else status
+    bulan = self.ent_bulan.get().strip() or None
+    if bulan:
+      try:
+        datetime.strptime(bulan, "%Y-%m")
+      except ValueError:
+        messagebox.showwarning(
+            "Filter Bulan", "Format bulan harus YYYY-MM (contoh: 2026-11)."
+        )
+        return None
+    return status, bulan
+
   def muat_data_owner(self):
     for r in self.tabel_laporan.get_children():
       self.tabel_laporan.delete(r)
 
-    total_lunas = 0
-    db = None
-    cursor = None
+    filt = self._filter_laporan()
+    if filt is None:
+      return
+    status, bulan = filt
 
-    try:
-      db = mysql.connector.connect(
-          host="localhost", user="root", password="", database="artstudio_rent"
+    rows = LaporanModel.riwayat(status)
+    if bulan:
+      rows = [r for r in rows if _bulan_dari(r.get("tgl_sewa")) == bulan]
+
+    for t in rows:
+      self.tabel_laporan.insert(
+          "",
+          "end",
+          values=(
+              t.get("id_transaksi"),
+              t.get("tgl_sewa") or "-",
+              f"{t.get('nama_lengkap') or '-'} ({t.get('username') or '-'})",
+              format_rupiah(t.get("total_biaya")),
+              format_rupiah(t.get("denda")),
+              t.get("status_transaksi") or "-",
+              t.get("tgl_kembali_aktual") or "-",
+          ),
       )
 
-      cursor = db.cursor(dictionary=True)
-
-      query = """
-                SELECT 
-                    t.id_transaksi,
-                    t.tgl_sewa,
-                    t.id_user,
-                    t.total_biaya,
-                    t.status_transaksi,
-                    u.nama_lengkap,
-                    u.username
-                FROM transaksi AS t
-                LEFT JOIN users AS u 
-                    ON t.id_user = u.id_user
-                ORDER BY t.id_transaksi DESC
-            """
-
-      cursor.execute(query)
-      transaksi_list = cursor.fetchall()
-
-      for t in transaksi_list:
-        biaya = float(t.get("total_biaya") or 0)
-        status = str(t.get("status_transaksi") or "Pending")
-
-        nama_penyewa = (
-            t.get("nama_lengkap")
-            or t.get("username")
-            or f"User {t.get('id_user')}"
-        )
-
-        if status.lower() in ("lunas", "selesai", "paid"):
-          total_lunas += biaya
-
-        self.tabel_laporan.insert(
-            "",
-            "end",
-            values=(
-                t.get("id_transaksi"),
-                t.get("tgl_sewa") or "-",
-                t.get("id_user"),
-                nama_penyewa,
-                f"Rp {biaya:,.0f}",
-                status,
-            ),
-        )
-
+    # Pendapatan = sewa (Lunas+Selesai+Tuntas) + denda yang sudah dibayar (Tuntas)
+    rekap = LaporanModel.rekapUmum()
+    if rekap is None:
+      self.lbl_total.configure(text="Total Pendapatan: (gagal memuat)")
+    else:
+      total = rekap["total_sewa"] + rekap["total_denda"]
       self.lbl_total.configure(
-          text=f"Total Pendapatan (Lunas): Rp {total_lunas:,.0f}"
+          text=f"Total Pendapatan (sewa + denda terbayar): {format_rupiah(total)}"
       )
 
-    except mysql.connector.Error as err:
-      messagebox.showerror("Database Error", f"Gagal memuat laporan:\n{err}")
-
-    finally:
-      if cursor is not None:
-        cursor.close()
-      if db is not None and db.is_connected():
-        db.close()
+    info = f"Menampilkan {len(rows)} transaksi"
+    if status:
+      info += f" | status {status}"
+    if bulan:
+      bln = LaporanModel.pendapatanBulanan(bulan)
+      pendapatan = sum(b["sewa"] + b["denda"] for b in bln)
+      info += f" | bulan {bulan} | pendapatan bulan ini {format_rupiah(pendapatan)}"
+    if rekap is not None:
+      info += (
+          f" | Pending {rekap['pending']} dan Batal {rekap['batal']}"
+          " tidak dihitung sebagai pendapatan"
+      )
+    self.lbl_info_laporan.configure(text=info)
 
   # ==================================================
   # ANALISIS UTILISASI
@@ -288,76 +355,74 @@ class OwnerGUI(ctk.CTk):
     for r in self.tabel_analisis.get_children():
       self.tabel_analisis.delete(r)
 
-    db = None
-    cursor = None
-    try:
-      db = mysql.connector.connect(
-          host="localhost", user="root", password="", database="artstudio_rent"
+    rows = LaporanModel.utilisasi()
+    if rows is None:
+      messagebox.showerror(
+          "Database Error", "Gagal memuat analisis utilisasi dari database."
       )
-      cursor = db.cursor(dictionary=True)
-
-      # Mengelompokkan data berdasarkan nama_alat dari tabel transaksi
-      query = """
-                SELECT 
-                    COALESCE(nama_alat, 'Studio Umum') AS alat,
-                    COUNT(*) AS frekuensi,
-                    SUM(total_biaya) AS total_pendapatan
-                FROM transaksi
-                GROUP BY nama_alat
-            """
-      cursor.execute(query)
-      rows = cursor.fetchall()
-
-      if rows:
-        for r in rows:
-          nama_alat = r.get("alat")
-          frek = r.get("frekuensi") or 0
-          pendapatan = float(r.get("total_pendapatan") or 0)
-
-          self.tabel_analisis.insert(
-              "",
-              "end",
-              values=(
-                  nama_alat,
-                  "Seni / Studio",
-                  f"{frek} Kali",
-                  f"Rp {pendapatan:,.0f}",
-              ),
-          )
-      else:
-        self.tabel_analisis.insert(
-            "",
-            "end",
-            values=("Belum ada data transaksi", "-", "-", "-"),
-        )
-
-    except Exception as e:
-      # Fallback jika kolom nama_alat belum ada di database
+      return
+    if not rows:
+      self.tabel_analisis.insert(
+          "", "end",
+          values=("Belum ada transaksi berbayar", "-", "-", "-"),
+      )
+      return
+    for r in rows:
       self.tabel_analisis.insert(
           "",
           "end",
-          values=("Studio Lukis Utama", "Lukis", "12 Kali", "Rp 3,600,000"),
+          values=(
+              r["nama"],
+              r["kategori"],
+              f"{r['frekuensi']} Kali",
+              format_rupiah(r["pendapatan"]),
+          ),
       )
-      self.tabel_analisis.insert(
-          "",
-          "end",
-          values=("Peralatan Patung & Pahat", "Patung", "8 Kali", "Rp 2,400,000"),
-      )
-    finally:
-      if cursor is not None:
-        cursor.close()
-      if db is not None and db.is_connected():
-        db.close()
 
   # ==================================================
-  # EXPORT LAPORAN
+  # EXPORT LAPORAN (TXT)
   # ==================================================
   def aksi_export(self):
-    messagebox.showinfo(
-        "Informasi",
-        "Fitur export belum diimplementasikan. Data laporan sudah dapat dilihat"
-        " di dashboard.",
+    filt = self._filter_laporan()
+    if filt is None:
+      return
+    status, bulan = filt
+    jenis = self.opt_jenis.get()
+
+    bagian = []  # (kode, baris)
+    if jenis in (JENIS_REKAP, JENIS_SEMUA):
+      bagian.append(("rekap", LaporanController.rekap_umum()))
+    if jenis in (JENIS_RIWAYAT, JENIS_SEMUA):
+      bagian.append(("riwayat", LaporanController.riwayat_transaksi(status, bulan)))
+    if jenis in (JENIS_BULANAN, JENIS_SEMUA):
+      bagian.append(("bulanan", LaporanController.pendapatan_bulanan(bulan)))
+
+    if any(baris is None for _, baris in bagian):
+      messagebox.showerror(
+          "Export Gagal",
+          "Laporan tidak bisa disusun (database tidak terjangkau atau filter tidak valid).",
+      )
+      return
+
+    gabung = []
+    for _, baris in bagian:
+      gabung += baris + [""]
+    kode = bagian[0][0] if len(bagian) == 1 else "lengkap"
+
+    path = filedialog.asksaveasfilename(
+        title="Simpan Laporan",
+        defaultextension=".txt",
+        initialfile=f"laporan_owner_{kode}_{datetime.now():%Y%m%d_%H%M%S}.txt",
+        filetypes=[("Teks", "*.txt"), ("Semua File", "*.*")],
     )
+    if not path:
+      return
+
+    hasil = LaporanController.simpan_txt(kode, gabung, path)
+    if hasil:
+      messagebox.showinfo("Berhasil", f"Laporan tersimpan di:\n{hasil}")
+    else:
+      messagebox.showerror("Gagal", "Laporan gagal disimpan. Periksa lokasi file.")
 
   # ==================================================
   # LOGOUT

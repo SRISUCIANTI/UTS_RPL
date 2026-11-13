@@ -120,3 +120,46 @@ class LaporanModel:
             return []
         finally:
             conn.close()
+
+    @staticmethod
+    def utilisasi():
+        """Utilisasi studio & alat dari transaksi yang uangnya sudah diterima
+        (Lunas/Selesai/Tuntas): frekuensi disewa + kontribusi pendapatan.
+
+        Mengembalikan list dict {kategori, nama, frekuensi, pendapatan},
+        diurutkan dari pendapatan terbesar. None bila database gagal."""
+        conn = get_connection()
+        if not conn:
+            return None
+        cursor = conn.cursor(dictionary=True)
+        try:
+            cursor.execute(
+                """SELECT 'Studio' AS kategori, s.nama_studio AS nama,
+                          COUNT(DISTINCT d.id_transaksi) AS frekuensi,
+                          COALESCE(SUM(d.subtotal), 0) AS pendapatan
+                   FROM detail_transaksi d
+                   JOIN transaksi t ON t.id_transaksi = d.id_transaksi
+                   JOIN studio s ON s.id_studio = d.id_studio
+                   WHERE t.status_transaksi IN ('Lunas', 'Selesai', 'Tuntas')
+                   GROUP BY s.id_studio, s.nama_studio
+                   UNION ALL
+                   SELECT 'Alat' AS kategori, a.nama_alat AS nama,
+                          COUNT(DISTINCT d.id_transaksi) AS frekuensi,
+                          COALESCE(SUM(d.subtotal), 0) AS pendapatan
+                   FROM detail_transaksi d
+                   JOIN transaksi t ON t.id_transaksi = d.id_transaksi
+                   JOIN alat a ON a.id_alat = d.id_alat
+                   WHERE t.status_transaksi IN ('Lunas', 'Selesai', 'Tuntas')
+                   GROUP BY a.id_alat, a.nama_alat
+                   ORDER BY pendapatan DESC, frekuensi DESC"""
+            )
+            rows = cursor.fetchall()
+            for r in rows:
+                r['pendapatan'] = float(r['pendapatan'] or 0)
+                r['frekuensi'] = int(r['frekuensi'] or 0)
+            return rows
+        except Exception as e:
+            print(f"[ERROR] Utilisasi: {e}")
+            return None
+        finally:
+            conn.close()

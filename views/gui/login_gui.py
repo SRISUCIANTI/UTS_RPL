@@ -27,7 +27,9 @@ ctk.set_appearance_mode(MODE_AWAL)
 ctk.set_default_color_theme("blue")
 
 def _cari_root():
-    """Naik dari folder file ini sampai ketemu folder yang berisi main.py atau assets/."""
+    """Dapatkan folder root proyek atau folder ekstrak sementara PyInstaller."""
+    if hasattr(sys, "_MEIPASS"):
+        return sys._MEIPASS
     awal = os.path.dirname(os.path.abspath(__file__))
     d = awal
     while True:
@@ -359,8 +361,8 @@ class LoginGUI(ctk.CTk):
             password_hash = hashlib.sha256(password.encode()).hexdigest()
 
             db = mysql.connector.connect(
-                host="localhost", user="root", password="", database="artstudio_rent"
-            )
+    host="localhost", user="root", password="", database="artstudio_rent", use_pure=True
+)
             cursor = db.cursor(dictionary=True)
             
             cursor.execute(
@@ -382,29 +384,24 @@ class LoginGUI(ctk.CTk):
                 role = str(user_data.get("role", "")).strip().lower()
                 id_user = user_data.get("id_user") or user_data.get("id")
                 nama_lengkap = user_data.get("nama_lengkap") or user_data.get("username")
+                data_login = {
+                    "id_user": id_user,
+                    "nama_lengkap": nama_lengkap,
+                    "role": role,
+                }
 
-                target_script = ""
                 if role in ["penyewa", "pelanggan"]:
-                    target_script = "penyewa_gui.py"
+                    from views.gui.penyewa_gui import PenyewaGUI
+                    PenyewaGUI(data_login).mainloop()
                 elif role in ["operator", "admin"]:
-                    target_script = "operator_gui.py"
+                    from views.gui.operator_gui import OperatorGUI
+                    OperatorGUI(data_login).mainloop()
                 elif role in ["owner", "pemilik"]:
-                    target_script = "owner_gui.py"
+                    from views.gui.owner_gui import OwnerGUI
+                    OwnerGUI(data_login).mainloop()
                 else:
                     messagebox.showerror("Error", f"Role '{role}' tidak dikenali sistem!")
                     return
-
-                script_path = os.path.join(current_dir, target_script)
-                if not os.path.exists(script_path):
-                    script_path = os.path.join(project_root, target_script)
-
-                subprocess.Popen([
-                    sys.executable,
-                    script_path,
-                    str(id_user),
-                    str(nama_lengkap),
-                    str(role),
-                ])
             else:
                 messagebox.showerror("Gagal Login", "Username atau password salah!")
 
@@ -426,7 +423,7 @@ class LoginGUI(ctk.CTk):
         try:
             password_hash = hashlib.sha256(password.encode()).hexdigest()
             db = mysql.connector.connect(
-                host="localhost", user="root", password="", database="artstudio_rent"
+                host="localhost", user="root", password="", database="artstudio_rent", use_pure=True
             )
             cursor = db.cursor(dictionary=True)
             cursor.execute("SELECT * FROM users WHERE username = %s OR email = %s", (username, email))

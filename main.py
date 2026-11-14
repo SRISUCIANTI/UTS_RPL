@@ -4,6 +4,10 @@ from views.cli.operator_cli import menu_operator
 from views.cli.owner_cli import menu_owner
 import sys
 
+import mysql.connector
+_orig_connect = mysql.connector.connect
+mysql.connector.connect = lambda *args, **kwargs: _orig_connect(*args, **{**kwargs, "use_pure": True})
+
 def jalankan_gui():
     """Buka aplikasi GUI: intro dulu, lalu halaman login.
     Lewati intro dengan: python main.py --no-intro"""

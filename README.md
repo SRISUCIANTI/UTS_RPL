@@ -8,14 +8,15 @@ Proyek ini disusun untuk memenuhi Ujian Tengah Semester (UTS) mata kuliah **Prak
 ---
 
 ## Tim Pengembang (Kelompok 5 - Kelas B)
-| Nama Anggota | NIM | Peran Utama |
-| :--- | :--- | :--- |
-| **M. Setiyawan** | F5212520060 | Ketua Kelompok / Owner |
-| **Bimo Prakoso B** | F5212520070 | Staf / Operator |
-| **Nabhita Akhilla** | F5212520057 | Penyewa / Pelanggan |
-| **Ananda Muthi’ah Z** | F5212520059 | Penyewa / Pelanggan |
-| **Sri Sucianti** | F5212520062 | Penyewa / Pelanggan|
-| **Fatih Ariqah** | F5212520071 | Penyewa / Pelanggan |
+
+| No. | Nama Anggota | NIM | Peran Utama |
+| :-: | :--- | :---: | :--- |
+| 1. | **Nabhita Akhilla** | F5212520057 | Requirements Analyst & Database Architect |
+| 2. | **Ananda Muthi’ah Z** | F5212520059 | UI/UX & Frontend Designers (View) |
+| 3. | **M. Setiyawan** | F5212520060 | UML & Class Designers |
+| 4. | **Sri Sucianti** | F5212520062 | UI/UX & Frontend Designers (View) |
+| 5. | **Bimo Prakoso B** | F5212520070 | System Analyst, Flow Designer & Backend |
+| 6. | **Fatih Ariqah** | F5212520071 | UML & Class Designers |
 
 ---
 

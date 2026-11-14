@@ -3,7 +3,7 @@
 
 Aplikasi berbasis desktop (*Python CustomTkinter*) dengan arsitektur **Model-View-Controller (MVC)** dan basis data **MySQL** untuk mengotomatisasi inventaris alat seni, reservasi jadwal ruang studio secara *real-time*, pencatatan transaksi sewa, verifikasi pembayaran manual, serta kalkulasi denda keterlambatan otomatis.
 
-Proyek ini disusun untuk memenuhi Ujian Tengah Semester (UTS) mata kuliah **Praktikum Rekayasa Perangkat Lunak**, Program Studi S1 Sistem Informasi, Universitas Tadulako
+Proyek ini disusun untuk memenuhi Ujian Tengah Semester (UTS) dan Ujian Akhir Semester (UAS) mata kuliah **Praktikum Rekayasa Perangkat Lunak**, Program Studi S1 Sistem Informasi, Universitas Tadulako
 
 ---
 
